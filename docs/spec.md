@@ -28,8 +28,9 @@ CSPBridgeGimp/
 │   └── csp/
 │       ├── plugin_entry.cpp / plugin_entry.h  # CSP エクスポート関数
 │       └── buffer.cpp / buffer.h       # CSP ↔ RGBA 変換
+├── scripts/
+│   └── read_config.py                 # meson setup 時に JSON を読んでパスを展開するスクリプト
 ├── build/
-│   ├── read_config.py                 # meson setup 時に JSON を読んでパスを展開するスクリプト
 │   └── cross/                         # クロスコンパイル用 cross-file テンプレート
 ├── tests/
 │   ├── test_config.cpp
@@ -192,7 +193,7 @@ project('CSPBridgeGimp', 'cpp', version: '0.1.0', default_options: ['cpp_std=c++
 
 # config/bridge_config.json から install 先を取得
 py = import('python').find_installation('python3', required: true)
-config_reader = files('build/read_config.py')
+config_reader = files('scripts/read_config.py')
 platform = host_machine.system()   # 'windows' or 'darwin'
 
 csp_output_dir = run_command(
@@ -252,7 +253,7 @@ print(value)
 ```
 
 - クロスコンパイル用 cross-file テンプレートは `build/cross/` 以下に配置
-- `read_config.py` は `meson setup` 時に実行されるため Python 3 が必須
+- `scripts/read_config.py` は `meson setup` 時に実行されるため Python 3 が必須
 
 ---
 
