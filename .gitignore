@@ -1,0 +1,52 @@
+# Build output
+build/
+out/
+bin/
+lib/
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.map
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Meson
+.mesonpy/
+meson-info/
+meson-logs/
+meson-private/
+__pycache__/
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+ipch/
+x64/
+x86/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# VS Code
+.vscode/
+
+# Temp / OS
+*.tmp
+*.bak
+Thumbs.db
+desktop.ini
+.DS_Store
