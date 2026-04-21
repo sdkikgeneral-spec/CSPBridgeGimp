@@ -12,6 +12,7 @@ project('CSPBridgeGimp', 'cpp',
 host_os  = host_machine.system()     # 'windows' or 'darwin'
 cpu      = host_machine.cpu_family() # 'x86_64' or 'aarch64'
 compiler = meson.get_compiler('cpp')
+is_msvc  = compiler.get_id() == 'msvc' or compiler.get_id() == 'clang-cl'
 
 # ----------------------------------------------------------------------------
 # プラットフォーム別コンパイルフラグ・定義
@@ -21,12 +22,21 @@ platform_link_args = []
 platform_deps = []
 
 if host_os == 'windows'
-    platform_args += [
-        '/DUNICODE',
-        '/D_UNICODE',
-        '/DWIN32_LEAN_AND_MEAN',
-        '/DNOMINMAX',
-    ]
+    if is_msvc
+        platform_args += [
+            '/DUNICODE',
+            '/D_UNICODE',
+            '/DWIN32_LEAN_AND_MEAN',
+            '/DNOMINMAX',
+        ]
+    else  # MinGW / Clang
+        platform_args += [
+            '-DUNICODE',
+            '-D_UNICODE',
+            '-DWIN32_LEAN_AND_MEAN',
+            '-DNOMINMAX',
+        ]
+    endif
     # Boost.Process / ネットワーク系が必要とする Windows システムライブラリ
     platform_deps += [
         compiler.find_library('ws2_32',  required: true),
@@ -46,7 +56,7 @@ endif
 # SIMD フラグ
 # ----------------------------------------------------------------------------
 if cpu == 'x86_64'
-    if compiler.get_id() == 'msvc'
+    if is_msvc
         platform_args += ['/arch:AVX2']
     else
         platform_args += ['-mavx2', '-msse4.1']
@@ -66,7 +76,7 @@ config_reader = files('scripts/read_config.py')
 
 csp_output_dir = run_command(
     py, config_reader,
-    '--config',   meson.source_root() / 'config' / 'bridge_config.json',
+    '--config',   meson.project_source_root() / 'config' / 'bridge_config.json',
     '--platform', host_os,
     '--key',      'csp_plugin_output_dir',
     check: true,
@@ -92,7 +102,7 @@ common_deps = [
 ] + platform_deps
 
 # ----------------------------------------------------------------------------
-# ソース
+# コアソース（全 DLL およびテストで共有するスタティックライブラリ）
 # ----------------------------------------------------------------------------
 srcs = files(
     'src/config/config.cpp',
@@ -105,14 +115,59 @@ srcs = files(
     'src/csp/buffer.cpp',
 )
 
-# ----------------------------------------------------------------------------
-# MyGimpHost 共有ライブラリ
-# ----------------------------------------------------------------------------
-myGimpHost_lib = shared_library('MyGimpHost', srcs,
+core_lib = static_library('CSPBridgeGimpCore', srcs,
     dependencies: common_deps,
-    install:      true,
-    install_dir:  csp_output_dir,
 )
+
+# ----------------------------------------------------------------------------
+# plugins.json から GIMP プラグイン id 一覧を取得し、DLL を生成
+#
+# 事前準備: meson setup の前に以下を実行して plugins.json を生成すること。
+#   python tools/scanner/scan_and_select.py
+#
+# plugins.json が存在しない場合は警告を表示してスキップする。
+# ----------------------------------------------------------------------------
+plugins_json = meson.project_source_root() / 'plugins.json'
+
+scan_result = run_command(
+    py, meson.project_source_root() / 'scripts' / 'list_plugin_ids.py',
+    plugins_json,
+    check: false,
+)
+
+bridge_libs = []
+
+if scan_result.returncode() != 0
+    warning('plugins.json が見つからないか不正です。' +
+            'tools/scanner/scan_and_select.py を実行してから meson setup を再実行してください。')
+else
+    raw_ids = scan_result.stdout().strip()
+    if raw_ids != ''
+        plugin_ids = raw_ids.split('\n')
+        foreach plugin_id : plugin_ids
+            if plugin_id != ''
+                if is_msvc
+                    plugin_macro_arg = '/DGIMP_PLUGIN_ID=\"' + plugin_id + '\"'
+                else
+                    plugin_macro_arg = '-DGIMP_PLUGIN_ID="' + plugin_id + '"'
+                endif
+                lib = shared_library(
+                    'CSPBridgeGimp_' + plugin_id,
+                    [],
+                    cpp_args:     [plugin_macro_arg],
+                    dependencies: common_deps,
+                    link_with:    core_lib,
+                    install:      true,
+                    install_dir:  csp_output_dir,
+                )
+                bridge_libs += lib
+            endif
+        endforeach
+    else
+        warning('plugins.json にエントリがありません。' +
+                'tools/scanner/scan_and_select.py でプラグインを選択してください。')
+    endif
+endif
 
 # ----------------------------------------------------------------------------
 # テスト
@@ -127,7 +182,7 @@ test_srcs = files(
 
 test_exe = executable('cspbridge_tests', test_srcs,
     dependencies: [catch2_dep, nlohmann_json_dep, boost_dep] + platform_deps,
-    link_with:    myGimpHost_lib,
+    link_with:    core_lib,
 )
 
 test('unit tests', test_exe)
