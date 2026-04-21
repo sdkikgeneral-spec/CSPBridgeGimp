@@ -1,0 +1,26 @@
+BasedOnStyle: Microsoft
+Standard: c++23
+
+# Microsoft スタイルからの調整
+ColumnLimit: 120
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# ブレース: Allman スタイル（Microsoft デフォルト）
+BreakBeforeBraces: Allman
+IndentCaseLabels: false
+
+# インクルード整理
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # プロジェクト内ヘッダー
+  - Regex: '^"'
+    Priority: 1
+  # Boost
+  - Regex: '^<boost/'
+    Priority: 2
+  # 標準ライブラリ
+  - Regex: '^<'
+    Priority: 3
