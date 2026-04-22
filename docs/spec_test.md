@@ -29,6 +29,18 @@ test('unit tests', test_exe)
 meson test -v --test-args="[config]"   # タグ指定
 ```
 
+### Python 側テスト
+
+`tools/scanner/` 配下のスキャナーは純 Python 実装のため、Catch2 / `meson test` とは**別系統**で標準ライブラリ `unittest` により検証する。外部依存 (pytest 等) は使わない。
+
+```bash
+# 検索で一括実行
+python -m unittest discover tools/scanner -p 'test_*.py'
+
+# 単一ファイルを直接実行
+python tools/scanner/test_wire.py
+```
+
 ---
 
 ## 2. ユニットテスト一覧
@@ -40,6 +52,7 @@ meson test -v --test-args="[config]"   # タグ指定
 | `tests/test_buffer.cpp` | `src/csp/buffer` | CSP バッファ ↔ RGBA 変換の往復一致 |
 | `tests/test_wire_io.cpp` | `src/ipc/wire_io` | Wire Protocol メッセージのシリアライズ/デシリアライズ（パイプをモックで代替） |
 | `tests/test_concurrency.cpp` | `src/ipc/wire_io` + `src/host/tile_transfer` | 複数 `PluginSession` 並列実行時のデータ競合・書き戻し順序の正当性 |
+| `tools/scanner/test_wire.py` | `tools/scanner/scan_and_select.py` の Wire I/O 部分 | Wire Protocol pack/unpack・GP_PROC_INSTALL / GP_PROC_RUN 受信・GP_PROC_RETURN 送信の正当性（オフライン・GIMP 実機不要） |
 
 ---
 

@@ -1,0 +1,18 @@
+{
+  "windows": {
+    "plugin_search_paths": [
+      "C:/Program Files/GIMP 3/lib/gimp/3.0/plug-ins",
+      "%APPDATA%/GIMP/3.0/plug-ins"
+    ],
+    "gimp_lib_dir": "C:/Program Files/GIMP 3/bin",
+    "csp_plugin_output_dir": "%APPDATA%/CELSYSUserData/CELSYS/CLIPStudioModule/PlugIn/PAINT"
+  },
+  "mac": {
+    "plugin_search_paths": [
+      "/Applications/GIMP.app/Contents/Resources/lib/gimp/3.0/plug-ins",
+      "{HOME}/Library/Application Support/GIMP/3.0/plug-ins"
+    ],
+    "gimp_lib_dir": "/Applications/GIMP.app/Contents/Resources/lib",
+    "csp_plugin_output_dir": "{HOME}/Library/Application Support/CELSYSUserData/CELSYS/CLIPStudioModule/PlugIn/PAINT"
+  }
+}
