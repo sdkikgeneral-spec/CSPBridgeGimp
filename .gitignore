@@ -60,3 +60,8 @@ desktop.ini
 
 # Claude Code local state (per-developer permissions cache)
 .claude/settings.local.json
+
+# Meson subprojects: download された実体は ignore、.wrap と packagefiles/ は追跡
+subprojects/*/
+!subprojects/packagefiles/
+!subprojects/packagefiles/**

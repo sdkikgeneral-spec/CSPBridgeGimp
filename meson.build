@@ -84,22 +84,63 @@ csp_output_dir = run_command(
 
 # ----------------------------------------------------------------------------
 # 依存ライブラリ
+#
+# 方針（PoC 現フェーズ）:
+#   - nlohmann_json / catch2 は WrapDB の wrap で取得（subprojects/*.wrap）
+#   - Boost は system インストール（MSYS2 / vcpkg / Homebrew 等）を期待し、
+#     pkg-config / cmake 経由で引く。見つからない場合は setup を止めず warning
+#     のみ。Boost.Process を使うモジュールは src/ 実装フェーズで必須化する
+#   - GIMP (libgimpwire / libgimpbase) はシステムインストール済み GIMP 3 の
+#     pkg-config ファイルから引く。見つからない場合は warning で先に進める。
+#     subprojects/gimp.wrap は将来のフル wrap 化用 placeholder（詳細はファイル
+#     冒頭コメント参照）
 # ----------------------------------------------------------------------------
-libgimpwire_dep   = dependency('libgimpwire',   fallback: ['gimp',          'libgimpwire_dep'])
-libgimpbase_dep   = dependency('libgimpbase',   fallback: ['gimp',          'libgimpbase_dep'])
 nlohmann_json_dep = dependency('nlohmann_json', fallback: ['nlohmann_json', 'nlohmann_json_dep'])
-boost_dep         = dependency('boost',
-    modules:  ['filesystem', 'system'],
-    required: true,
-)
 catch2_dep        = dependency('catch2-with-main', fallback: ['catch2', 'catch2_with_main_dep'])
 
+boost_dep = dependency('boost',
+    modules:  ['filesystem', 'system'],
+    required: false,
+)
+if not boost_dep.found()
+    warning('Boost (filesystem, system) が見つかりません。' +
+            'Boost.Process を利用する src/ipc 実装フェーズまでに ' +
+            'system インストール (MSYS2 / vcpkg / Homebrew 等) してください。')
+endif
+
+libgimpwire_dep = dependency('gimp-wire-3.0', required: false)
+if not libgimpwire_dep.found()
+    libgimpwire_dep = dependency('libgimpwire-3.0', required: false)
+endif
+if not libgimpwire_dep.found()
+    warning('libgimpwire (gimp-wire-3.0 / libgimpwire-3.0) が pkg-config から ' +
+            '見つかりません。GIMP 3 をシステムインストールするか、将来的に ' +
+            'subprojects/gimp.wrap を有効化してください。')
+endif
+
+libgimpbase_dep = dependency('gimp-base-3.0', required: false)
+if not libgimpbase_dep.found()
+    libgimpbase_dep = dependency('libgimpbase-3.0', required: false)
+endif
+if not libgimpbase_dep.found()
+    warning('libgimpbase (gimp-base-3.0 / libgimpbase-3.0) が pkg-config から ' +
+            '見つかりません。GIMP 3 をシステムインストールするか、将来的に ' +
+            'subprojects/gimp.wrap を有効化してください。')
+endif
+
 common_deps = [
-    libgimpwire_dep,
-    libgimpbase_dep,
     nlohmann_json_dep,
-    boost_dep,
-] + platform_deps
+]
+if boost_dep.found()
+    common_deps += boost_dep
+endif
+if libgimpwire_dep.found()
+    common_deps += libgimpwire_dep
+endif
+if libgimpbase_dep.found()
+    common_deps += libgimpbase_dep
+endif
+common_deps += platform_deps
 
 # ----------------------------------------------------------------------------
 # コアソース（全 DLL およびテストで共有するスタティックライブラリ）
