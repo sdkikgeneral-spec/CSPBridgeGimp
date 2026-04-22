@@ -56,9 +56,10 @@ Use the project-local skills and hooks already installed:
 
 ## Risk register (active)
 
-1. **Windows fd inheritance** — Python's `subprocess.Popen(close_fds=False)` inherits Win32 HANDLEs but not MSVCRT fd-table entries. GIMP 3 `g_io_channel_win32_new_fd(atoi(argv[...]))` may fail on Windows. Untested until a GIMP 3 install is available. Details in spec.md §5.6 with fallback options (a)/(b)/(c).
-2. **GIMP 3 dev environment dependency** — System-installed GIMP 3 with `gimp-base-3.0.pc` / `gimp-wire-3.0.pc` is assumed. If CI or a teammate lacks it, build produces warnings but completes (optional deps). Integration testing cannot proceed without it.
-3. **CSP plugin API knowledge gap** — the csp-plugin-engineer agent has limited domain info right now; plan a research spike before implementing `src/csp/*`.
+1. ~~**Windows fd inheritance** — RESOLVED 2026-04-22~~. Python `ctypes` + `CreateProcessW` + `STARTUPINFO.lpReserved2` with a MSVCRT fd-inherit block works; scanner validates against GIMP 3.2.4 end-to-end (114/118 plugins). See spec.md §5.6 for the canonical approach; port the same scheme to C++ `src/ipc/process.cpp`.
+2. **GIMP version target shifted 3.0 → 3.2** (installed machine has 3.2.4). Protocol bumped 0x0115 → 0x0117; enum gained `*_CURVE` at value 14/15. spec.md § 5.3–5.7 updated. **Port the scanner's delta to any new consumer** (e.g. `pdb_stubs.cpp`) before writing.
+3. **GIMP 3 dev environment dependency** — System-installed GIMP 3.2+ is assumed. pkg-config exports as `gimp-3.0` (API version, not GIMP version — confusing but standard). If CI or a teammate lacks it, build produces warnings but completes (optional deps). Integration testing cannot proceed without it.
+4. **CSP plugin API knowledge gap** — the csp-plugin-engineer agent has limited domain info right now; plan a research spike before implementing `src/csp/*`.
 
 ## Knowledge feedback loop (project rule, confirmed 2026-04-22)
 

@@ -74,17 +74,36 @@ GIMP 3.0 plugins expect exactly 7 argv elements:
 - `mode`: `"-query"` / `"-init"` / `"-run"`
 - `stack_trace`: `"0"` (NEVER), `"1"` (QUERY), `"2"` (ALWAYS)
 
-## Windows FD-inheritance KNOWN RISK (spec.md §5.6)
+## Windows FD inheritance — VERIFIED SOLUTION (spec.md §5.6)
 
-Python's `subprocess.Popen(close_fds=False)` inherits Win32 HANDLEs but **does not register them in the child's MSVCRT fd table**. `g_io_channel_win32_new_fd(atoi(argv[...]))` in GIMP 3 may fail. Phase 0 scanner is not yet verified against a real GIMP 3 install. When you implement `src/ipc/process.cpp` in C++:
+**2026-04-22 resolution** (spec.md §5.6, scanner `_spawn_plugin_windows`): the only reliable way is a direct `CreateProcessW` call with `STARTUPINFO.lpReserved2` carrying an MSVCRT fd-inherit block. `Boost.Process` on Windows does NOT do this natively — you will need to either drop to Win32 API or use a Boost.Process extension that exposes `STARTUPINFO`.
 
-- If `Boost.Process` inherits handles correctly on Windows, great.
-- If not, the fallback options are:
-  - (a) Raw `CreateProcessW` with `STARTUPINFO.lpReserved2` / `cbReserved2` set to an MSVCRT fd map
-  - (b) Switch anonymous pipes to named pipes; pass the pipe name via argv
-  - (c) Patch GIMP (LGPL requires publishing the diff)
+### The fd-inherit block (MSVCRT internal, not publicly documented)
 
-Treat this as the first real-world integration test point and report results back to spec.md §5.6.
+```
+offset  size              content
+------  ----------------  -----------------------------------------------
+0       uint32            count
+4       uint8[count]      ioinfo flags per fd
+                          (FOPEN=0x01, FPIPE=0x08, FDEV=0x40, FTEXT=0x80)
+4+count HANDLE[count]     Win32 HANDLE per fd (8 bytes each on x64)
+```
+
+Binary pipe fds get `FOPEN | FPIPE`. **Never set `FTEXT`** — CRT will do `\n→\r\n` translation and corrupt the wire protocol.
+
+### Sequence (what `app/plug-in/gimpplugin.c` does, mirror in C++)
+
+1. `_pipe(fds, 4096, _O_BINARY)` — binary-mode MSVCRT fd pair (x2 for bidirectional)
+2. `setmode(fd, _O_BINARY)` on each fd as belt-and-suspenders
+3. `SetHandleInformation(parent_handle, HANDLE_FLAG_INHERIT, 0)` on parent-side fds (CLOEXEC)
+4. `SetHandleInformation(child_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)` on child-side fds
+5. Build lpReserved2 with 5 entries (fd 0/1/2 unused = INVALID + flags=0, fd 3 = child_read_handle, fd 4 = child_write_handle)
+6. `CreateProcessW(... bInheritHandles=TRUE, ...)` with `STARTUPINFO.cbReserved2 = size` and `.lpReserved2 = buffer`
+7. argv: `{progname, "-gimp", "279", "3", "4", mode, stack_trace}`
+8. Parent closes its copy of the child-side fds after CreateProcess returns
+9. Parent must prepend `gimp_lib_dir` to child's `PATH` env or plugin crashes with `STATUS_DLL_NOT_FOUND` (0xC0000135) looking for `libgimp-3.0-0.dll`
+
+Python reference implementation (working against GIMP 3.2.4): `tools/scanner/scan_and_select.py` — `_spawn_plugin_windows()` and `_build_msvcrt_inherit_block()`. Port this to C++ using Win32 API directly; do not try to abstract over Boost.Process.
 
 ## Meson build / subprojects conventions (spec.md §6)
 

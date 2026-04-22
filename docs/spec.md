@@ -379,27 +379,68 @@ GP_PROC_RETURN ペイロード:
 | Wire Protocol | `subprocess` + `struct`（バイナリパック） |
 | JSON 出力 | `json`（標準ライブラリ） |
 
-### 5.6 FD 継承（プラットフォーム差異・既知リスク）
+### 5.6 FD 継承（Windows / Mac）
 
-子プロセスに read/write fd を引き渡す方法：
+子プロセスに read/write fd を引き渡す方法。**2026-04-22 GIMP 3.2.4 実機で Windows 版を疎通確認済み**（118 プラグイン中 114 成功、残 4 は外部依存欠如による failure で protocol 問題ではない）。
 
-- **POSIX (Mac/Linux)**: `os.pipe()` → `os.set_inheritable(fd, True)` → `subprocess.Popen(..., close_fds=True, pass_fds=(...))`。標準的な手順で確実に動作する。
-- **Windows**: `subprocess.Popen` の `pass_fds` は未サポート。`close_fds=False` + `os.set_inheritable` で Win32 HANDLE は継承されるが、MSVCRT の fd テーブルへの再登録（`STARTUPINFO.lpReserved2` / `cbReserved2` 経由）は Python 側で行わない。子プロセス（GIMP プラグイン）が `g_io_channel_win32_new_fd(atoi(argv[...]))` で fd を開き直せるかは未検証。
-  - **既知リスク**: GIMP 3 実機での疎通確認が取れるまで Windows 版の FD 継承は PoC の未確定要素とする。もし動かない場合の選択肢:
-    - (a) `ctypes` で `CreateProcessW` を直接呼び、`STARTUPINFO.lpReserved2` に MSVCRT fd マップを埋める
-    - (b) 匿名パイプを named pipe に置き換え、子は名前で `CreateFile` する（argv には fd ではなく pipe 名を渡す）
-    - (c) GIMP 側に独自 host 検出パッチを当てる（LGPL なので差分公開）
+#### POSIX (Mac / Linux)
+
+`os.pipe()` → `os.set_inheritable(fd, True)` → `subprocess.Popen(..., close_fds=True, pass_fds=(...))`。POSIX 標準手順で確実に動作する。
+
+#### Windows — GIMP 本体互換方式（採用）
+
+`app/plug-in/gimpplugin.c`（GIMP 本体 host 側）が使う方式をそのまま再現する。Python の `subprocess.Popen` では `lpReserved2` を扱えないため、`ctypes` から `CreateProcessW` を**直接呼ぶ**。
+
+手順:
+
+1. **binary パイプ作成**: `os.pipe()` + `msvcrt.setmode(fd, os.O_BINARY)` で fd を binary mode に固定。GIMP 側は `_pipe(fds, 4096, _O_BINARY)` 相当
+2. **CLOEXEC**: 親側 fd の HANDLE は `SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)` で継承不可にする。子側 fd は継承可に
+3. **`STARTUPINFO.lpReserved2`** に MSVCRT fd-inherit ブロックを埋め、`CreateProcessW(bInheritHandles=TRUE)` を呼ぶ。子の MinGW/MSVCRT は起動時にこのブロックを読み、fd テーブルを再構築する
+4. argv には子側の fd 番号（例: "3", "4"）を渡す。`libgimp/gimp.c` の `gimp_main()` が `atoi(argv[3])` / `atoi(argv[4])` で fd を取得
+
+lpReserved2 ブロックのレイアウト（MSVCRT 内部形式、公式ドキュメント非公開）:
+
+```
+offset  size        content
+------  ----------  -----------------------------------------------------
+0       uint32      count (= 登録する fd の総数)
+4       uint8 * count  各 fd の ioinfo フラグ
+                       FOPEN=0x01 / FEOFLAG=0x02 / FCRLF=0x04 /
+                       FPIPE=0x08 / FNOINHERIT=0x10 / FAPPEND=0x20 /
+                       FDEV=0x40 / FTEXT=0x80
+4+count HANDLE * count  各 fd の Win32 HANDLE (64-bit で 8 bytes/個)
+                        未割当 fd は INVALID_HANDLE_VALUE (-1) + flags=0
+```
+
+**フラグ選択**: binary パイプは `FOPEN | FPIPE` (= 0x09)。`FTEXT` は**立てない**（立てると子側で CRLF 変換が入り wire protocol が壊れる）。
+
+**fd 割り当て慣行**:
+- 子 fd 0/1/2（std streams）: INVALID_HANDLE + flags=0 を入れ、子は `STARTUPINFO.hStdInput/Output/Error` を使う
+- 子 fd 3: プラグインが read する fd（親が書く側の反対端）
+- 子 fd 4: プラグインが write する fd
+- argv: `["plug-in.exe", "-gimp", "279", "3", "4", "-query", "0"]`
+
+参考実装: `tools/scanner/scan_and_select.py` の `_spawn_plugin_windows()` 関数と `_build_msvcrt_inherit_block()` ヘルパ。C++ 版 `MyGimpHost` (`src/ipc/process.cpp`) でも同じ方式を移植する。
+
+#### 検証済みでない構成
+- **Python`subprocess.Popen` の stdin/stdout 経由**: 原理的には動くが子 CRT の text mode で `\n → \r\n` 変換が入り、wire protocol が壊れる。CRLF 逆変換レイヤーで潰す hack は存在するが fragile。採用しない。
+- **named pipe**: argv に fd 整数を要求する `gimp_main` の仕様と両立しない。
+- **GIMP 側パッチ**: LGPL 要件上差分公開が発生。ROI が低いため採用しない。
 
 ### 5.7 MyGimpHost との関係
 
 スキャナーの Wire Protocol クエリフェーズ実装は、`MyGimpHost` の**最初のプロトタイプ**となる。スキャナーで Wire Protocol の疎通を確認してから、`MyGimpHost` に run フェーズ（タイル転送）を追加する順序で進める。
 
-**スキャナーから MyGimpHost へ移植すべき知見**:
+**スキャナーから MyGimpHost へ移植すべき知見**（2026-04-22 実機検証済み事項含む）:
 
-- GIMP 3.0 起動引数の 7 要素フォーマット
-- `-query` モードでは GP_CONFIG を待たず即 GP_PROC_INSTALL が来る
-- menu/blurb は PDB コールバックで届くので、host 側で最低限の PDB スタブ応答が必要
-- メッセージヘッダーは 4 バイト type のみ（長さフィールドなし）→ 未知型が混ざると同期を失う。受信側は全メッセージ型を尽くす必要あり
+- **プロトコルバージョン**: GIMP 3.2 = `0x0117` (= 279)。GIMP 3.0 の `0x0115` (= 277) とは非互換。子プラグイン側は引数 `<protocol_version>` を `atoi` してバージョン一致をチェックし、mismatch なら `"GIMP is using an older version of the plug-in protocol."` で即終了する
+- **enum 追加（3.0 → 3.2）**: `GP_PARAM_DEF_TYPE_CURVE = 14`（meta は `uint32 none_ok`）、`GP_PARAM_TYPE_CURVE = 15`。既存の scanner/host は両方にハンドラを持たないと CURVE パラメータを持つプラグインで desync
+- **argv 7 要素フォーマット**: `[<progname>, "-gimp", "<protocol_version>", "<read_fd>", "<write_fd>", "<mode>", "<stack_trace>"]`
+- **`-query` モード挙動**: プラグインは `GP_CONFIG` を待たず即 `GP_PROC_INSTALL` を書く
+- **PDB コールバック経由のメタデータ**: `menu_label` / `blurb` / `attribution` / `documentation` / `image-types` / `sensitivity-mask` 等は `GP_PROC_INSTALL` に含まれず、`GP_PROC_RUN` で送られる。host は各呼び出しに対し **`GP_PROC_RETURN` + `status=GIMP_PDB_SUCCESS`** を同期応答する必要あり。未応答だと子がブロックする
+- **メッセージフレーミング**: ヘッダーは uint32 type のみ（長さ無し）。未知 type が来ると sync 喪失。受信側は**全 type を網羅**した読み捨て／応答ロジックを持つこと
+- **DLL 解決**: Windows では `libgimp-3.0-0.dll`, `libgimpbase-3.0-0.dll` 等が `gimp_lib_dir` にあるため、子プロセスの `PATH` 先頭にこのディレクトリを追加しないと `STATUS_DLL_NOT_FOUND` (0xC0000135) で即クラッシュする
+- **Windows FD 継承**: §5.6 参照。`CreateProcessW` + `STARTUPINFO.lpReserved2` で MSVCRT fd テーブルを明示的に引き継ぐ必要がある。`subprocess.Popen` / `posix_spawn` 標準ルートではダメ
 
 ---
 

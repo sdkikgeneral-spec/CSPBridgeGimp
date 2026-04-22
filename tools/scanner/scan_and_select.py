@@ -86,7 +86,11 @@ from typing import Any, BinaryIO, Optional
 # 定数
 # ---------------------------------------------------------------------------
 
-GIMP_PROTOCOL_VERSION: int = 0x0115  # = 277 decimal, GIMP 3.0.x
+GIMP_PROTOCOL_VERSION: int = 0x0117  # = 279 decimal, GIMP 3.2.x
+# Historical: GIMP 3.0.x = 0x0115 (=277). Upstream bumped to 0x0117 in
+# 3.2 when GP_PARAM_DEF_TYPE_CURVE and GP_PARAM_TYPE_CURVE were added.
+# Plugins reject mismatching versions with
+# "GIMP is using an older version of the plug-in protocol."
 
 # メッセージタイプ番号 (libgimpbase/gimpprotocol.h の enum 順)
 GP_QUIT: int = 0
@@ -119,6 +123,7 @@ GP_PARAM_TYPE_ID_ARRAY: int = 11
 GP_PARAM_TYPE_EXPORT_OPTIONS: int = 12
 GP_PARAM_TYPE_PARAM_DEF: int = 13
 GP_PARAM_TYPE_VALUE_ARRAY: int = 14
+GP_PARAM_TYPE_CURVE: int = 15  # Added in GIMP 3.2 (protocol 0x0117)
 
 # GPParamDefType
 GP_PARAM_DEF_TYPE_DEFAULT: int = 0
@@ -135,6 +140,7 @@ GP_PARAM_DEF_TYPE_ID_ARRAY: int = 10
 GP_PARAM_DEF_TYPE_EXPORT_OPTIONS: int = 11
 GP_PARAM_DEF_TYPE_RESOURCE: int = 12
 GP_PARAM_DEF_TYPE_FILE: int = 13
+GP_PARAM_DEF_TYPE_CURVE: int = 14  # Added in GIMP 3.2 (protocol 0x0117)
 
 # PDB status
 GIMP_PDB_SUCCESS: int = 0
@@ -159,6 +165,7 @@ PARAM_TYPE_NAMES: dict[int, str] = {
     GP_PARAM_TYPE_EXPORT_OPTIONS: "EXPORT_OPTIONS",
     GP_PARAM_TYPE_PARAM_DEF: "PARAM_DEF",
     GP_PARAM_TYPE_VALUE_ARRAY: "VALUE_ARRAY",
+    GP_PARAM_TYPE_CURVE: "CURVE",
 }
 
 
@@ -405,6 +412,8 @@ def read_param_def(stream: BinaryIO) -> ParamDef:
         read_uint32(stream)  # action
         read_uint32(stream)  # none_ok
         _ = read_string(stream)  # default_uri
+    elif param_def_type == GP_PARAM_DEF_TYPE_CURVE:
+        read_uint32(stream)  # none_ok (GIMP 3.2+)
     else:
         raise WireError(f"unknown param_def_type: {param_def_type}")
 
@@ -634,88 +643,285 @@ def write_proc_return(
 class PluginProcess:
     """子プロセスと、親側から見た read/write ストリームの組。"""
 
-    process: subprocess.Popen
+    process: Any                 # subprocess.Popen or _Win32ChildHandle
     read_from_plugin: BinaryIO   # プラグイン stdout 相当。親が読む
     write_to_plugin: BinaryIO    # プラグイン stdin 相当。親が書く
 
 
-def _spawn_plugin_windows(exe_path: str) -> PluginProcess:
-    """
-    @brief  Windows で GIMP プラグイン EXE をクエリモードで起動する。
+if sys.platform.startswith("win"):
+    import ctypes
+    import ctypes.wintypes as _wt
+    import msvcrt
 
-    Python の os.pipe() は MSVCRT fd を返し、`os.set_inheritable(fd, True)`
-    を立てた上で `subprocess.Popen(..., close_fds=False)` で渡せば
-    子プロセスに fd 番号が引き継がれる。GIMP 3 の plug-in は
-    `g_io_channel_win32_new_fd(atoi(argv[...]))` で fd を直接開くため、
-    この方式で互換が取れる。
+    # MSVCRT ioinfo flags — 子 CRT が lpReserved2 から fd を再構成する際に使用
+    _FOPEN = 0x01
+    _FEOFLAG = 0x02
+    _FCRLF = 0x04
+    _FPIPE = 0x08
+    _FNOINHERIT = 0x10
+    _FAPPEND = 0x20
+    _FDEV = 0x40
+    _FTEXT = 0x80
 
-    既知リスク (GIMP 3 実機未検証):
-        Python の subprocess.Popen(close_fds=False) は Win32 HANDLE を
-        継承させるが、MSVCRT の fd テーブルへの再登録
-        (STARTUPINFO.lpReserved2 / cbReserved2 経由) は行わない。
-        GIMP プラグインは g_io_channel_win32_new_fd(atoi(argv[...])) で
-        fd を開き直すが、これが成功するかは実測次第。
-        もし失敗した場合の対処:
-          (a) ctypes で CreateProcessW + lpReserved2 に MSVCRT fd マップを設定
-          (b) 匿名パイプを named pipe に切り替え、argv にパイプ名を渡す
-          (c) GIMP 側にパッチ (LGPL なので差分公開)
-        詳細は docs/spec.md §5.6 参照。
+    _STARTF_USESTDHANDLES = 0x00000100
+    _CREATE_UNICODE_ENVIRONMENT = 0x00000400
+    _HANDLE_FLAG_INHERIT = 0x00000001
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class _STARTUPINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cb", _wt.DWORD),
+            ("lpReserved", _wt.LPWSTR),
+            ("lpDesktop", _wt.LPWSTR),
+            ("lpTitle", _wt.LPWSTR),
+            ("dwX", _wt.DWORD),
+            ("dwY", _wt.DWORD),
+            ("dwXSize", _wt.DWORD),
+            ("dwYSize", _wt.DWORD),
+            ("dwXCountChars", _wt.DWORD),
+            ("dwYCountChars", _wt.DWORD),
+            ("dwFillAttribute", _wt.DWORD),
+            ("dwFlags", _wt.DWORD),
+            ("wShowWindow", _wt.WORD),
+            ("cbReserved2", _wt.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_ubyte)),
+            ("hStdInput", _wt.HANDLE),
+            ("hStdOutput", _wt.HANDLE),
+            ("hStdError", _wt.HANDLE),
+        ]
+
+    class _PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", _wt.HANDLE),
+            ("hThread", _wt.HANDLE),
+            ("dwProcessId", _wt.DWORD),
+            ("dwThreadId", _wt.DWORD),
+        ]
+
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.CreateProcessW.argtypes = [
+        _wt.LPCWSTR, _wt.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+        _wt.BOOL, _wt.DWORD, ctypes.c_void_p, _wt.LPCWSTR,
+        ctypes.POINTER(_STARTUPINFOW), ctypes.POINTER(_PROCESS_INFORMATION),
+    ]
+    _kernel32.CreateProcessW.restype = _wt.BOOL
+    _kernel32.WaitForSingleObject.argtypes = [_wt.HANDLE, _wt.DWORD]
+    _kernel32.WaitForSingleObject.restype = _wt.DWORD
+    _kernel32.GetExitCodeProcess.argtypes = [_wt.HANDLE, ctypes.POINTER(_wt.DWORD)]
+    _kernel32.GetExitCodeProcess.restype = _wt.BOOL
+    _kernel32.TerminateProcess.argtypes = [_wt.HANDLE, _wt.UINT]
+    _kernel32.TerminateProcess.restype = _wt.BOOL
+    _kernel32.CloseHandle.argtypes = [_wt.HANDLE]
+    _kernel32.CloseHandle.restype = _wt.BOOL
+    _kernel32.SetHandleInformation.argtypes = [_wt.HANDLE, _wt.DWORD, _wt.DWORD]
+    _kernel32.SetHandleInformation.restype = _wt.BOOL
+
+
+def _build_msvcrt_inherit_block(
+    entries: list[tuple[int, int]],
+) -> tuple["ctypes.Array[ctypes.c_ubyte]", int]:
     """
-    # parent_read <- plugin_write
+    @brief  MSVCRT が子プロセス起動時に lpReserved2 から読む fd-inherit ブロックを作る。
+
+    レイアウト:
+        uint32 count
+        uint8  flags[count]
+        HANDLE handles[count]          (64-bit で 8 bytes、32-bit で 4 bytes)
+
+    @param  entries  (handle, flags) のリスト。index が子側の fd 番号
+    @return (ctypes バイト buffer, 合計サイズ)
+    """
+    count = len(entries)
+    handle_size = ctypes.sizeof(ctypes.c_void_p)
+    total = 4 + count + count * handle_size
+    buf = (ctypes.c_ubyte * total)()
+
+    # count
+    ctypes.memmove(buf, ctypes.byref(ctypes.c_uint32(count)), 4)
+    # flags
+    for i, (_h, f) in enumerate(entries):
+        buf[4 + i] = f & 0xFF
+    # handles
+    handles_offset = 4 + count
+    for i, (h, _f) in enumerate(entries):
+        ctypes.memmove(
+            ctypes.addressof(buf) + handles_offset + i * handle_size,
+            ctypes.byref(ctypes.c_void_p(h if h is not None else _INVALID_HANDLE_VALUE)),
+            handle_size,
+        )
+    return buf, total
+
+
+class _Win32ChildHandle:
+    """
+    @brief  CreateProcessW で作った子プロセスを subprocess.Popen 風に扱うための軽量ラッパー。
+    必要なメソッドだけ: wait(timeout)、kill()、returncode プロパティ、stderr 属性。
+    """
+
+    def __init__(
+        self, process_handle: int, thread_handle: int, pid: int,
+        stderr_stream: Optional[BinaryIO] = None,
+    ) -> None:
+        self._proc_h = process_handle
+        self._thread_h = thread_handle
+        self.pid = pid
+        self.returncode: Optional[int] = None
+        self.stderr = stderr_stream
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        ms = 0xFFFFFFFF if timeout is None else int(timeout * 1000)
+        rc = _kernel32.WaitForSingleObject(self._proc_h, ms)
+        if rc == 0x00000102:  # WAIT_TIMEOUT
+            raise subprocess.TimeoutExpired("plugin", timeout)
+        code = _wt.DWORD()
+        if not _kernel32.GetExitCodeProcess(self._proc_h, ctypes.byref(code)):
+            raise OSError(ctypes.WinError())
+        self.returncode = code.value
+        _kernel32.CloseHandle(self._thread_h)
+        _kernel32.CloseHandle(self._proc_h)
+        return self.returncode
+
+    def kill(self) -> None:
+        _kernel32.TerminateProcess(self._proc_h, 1)
+
+
+def _spawn_plugin_windows(
+    exe_path: str, gimp_lib_dir: Optional[str] = None
+) -> PluginProcess:
+    """
+    @brief  Windows で GIMP プラグイン EXE をクエリモードで起動する（GIMP 本体互換方式）。
+
+    GIMP 本体の `app/plug-in/gimpplugin.c` が使う方式を再現する:
+
+    1. `os.pipe()` で匿名パイプを作成し、`msvcrt.setmode(fd, O_BINARY)` で
+       両端を binary mode に固定（GIMP 側の `_pipe(fds, 4096, _O_BINARY)` 相当）
+    2. 親側の fd は `SetHandleInformation(HANDLE_FLAG_INHERIT, 0)` で継承不可に
+       する（GIMP の `gimp_spawn_set_cloexec` 相当）
+    3. `CreateProcessW` を ctypes から直接呼び、`STARTUPINFO.lpReserved2` に
+       MSVCRT fd マップを埋め込む。これで子 CRT が同じ fd 番号で HANDLE を
+       開き直せる（GLib の `g_spawn_async` が内部でやっている挙動）
+
+    lpReserved2 レイアウト:
+        uint32 count
+        uint8  flags[count]           各 fd の MSVCRT ioinfo フラグ
+        HANDLE handles[count]         各 fd の Win32 HANDLE
+
+    本 PoC では count=5 とし、fd 0/1/2 は INVALID_HANDLE_VALUE + flags=0
+    （= 未割当、子は STARTUPINFO を使う）、fd 3/4 にパイプ HANDLE を登録する。
+    argv には "3" / "4" を渡すので子の gimp_main() が正しく開ける。
+
+    子のプラグインは libgimp-3.0-0.dll 等にリンクされているため、
+    `gimp_lib_dir` を PATH 先頭に追加しないと STATUS_DLL_NOT_FOUND になる。
+    """
+    # 1. パイプ作成（両方向）と binary mode 化
     parent_read_fd, plugin_write_fd = os.pipe()
-    # plugin_read <- parent_write
     plugin_read_fd, parent_write_fd = os.pipe()
+    for fd in (parent_read_fd, plugin_write_fd,
+               plugin_read_fd, parent_write_fd):
+        msvcrt.setmode(fd, os.O_BINARY)
 
-    # 子プロセス側の fd を継承可にする
-    os.set_inheritable(plugin_read_fd, True)
-    os.set_inheritable(plugin_write_fd, True)
-    # 親側の fd は継承させない（CLOEXEC 相当）
-    os.set_inheritable(parent_read_fd, False)
-    os.set_inheritable(parent_write_fd, False)
+    # 親側 HANDLE を継承不可（"CLOEXEC"）に
+    for fd in (parent_read_fd, parent_write_fd):
+        h = msvcrt.get_osfhandle(fd)
+        _kernel32.SetHandleInformation(h, _HANDLE_FLAG_INHERIT, 0)
+    # 子側 HANDLE は継承可に
+    for fd in (plugin_read_fd, plugin_write_fd):
+        h = msvcrt.get_osfhandle(fd)
+        _kernel32.SetHandleInformation(h, _HANDLE_FLAG_INHERIT, _HANDLE_FLAG_INHERIT)
 
+    # 2. lpReserved2 ブロック構築
+    #    子 fd 0..2: 未割当 (子は STARTUPINFO / 既定の継承)
+    #    子 fd 3: プラグインが read する（= 親 write 側の反対端）
+    #    子 fd 4: プラグインが write する（= 親 read 側の反対端）
+    flags = _FOPEN | _FPIPE  # binary mode なので _FTEXT を立てない
+    entries = [
+        (None, 0),  # fd 0
+        (None, 0),  # fd 1
+        (None, 0),  # fd 2
+        (msvcrt.get_osfhandle(plugin_read_fd), flags),   # fd 3
+        (msvcrt.get_osfhandle(plugin_write_fd), flags),  # fd 4
+    ]
+    reserved2_buf, reserved2_size = _build_msvcrt_inherit_block(entries)
+
+    # 3. argv / env / CreateProcessW 呼出し
     argv = [
-        exe_path,
-        "-gimp",
-        str(GIMP_PROTOCOL_VERSION),
-        str(plugin_read_fd),
-        str(plugin_write_fd),
-        "-query",
-        "0",  # GIMP_STACK_TRACE_NEVER
+        exe_path, "-gimp", str(GIMP_PROTOCOL_VERSION),
+        "3", "4", "-query", "0",
     ]
 
-    try:
-        proc = subprocess.Popen(
-            argv,
-            close_fds=False,
-            pass_fds=(plugin_read_fd, plugin_write_fd)
-            if sys.platform != "win32"
-            else (),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-    except Exception:
-        os.close(parent_read_fd)
-        os.close(parent_write_fd)
-        os.close(plugin_read_fd)
-        os.close(plugin_write_fd)
-        raise
+    # コマンドライン文字列（CreateProcessW は mutable buffer を要求）
+    def _quote(arg: str) -> str:
+        # 空白・引用符を含む場合の単純クォート。GIMP plugin path 用に十分
+        if any(c in arg for c in ' \t"'):
+            return '"' + arg.replace('"', r'\"') + '"'
+        return arg
 
-    # 親プロセス側では子側の fd は不要なので閉じる
+    cmdline = " ".join(_quote(a) for a in argv)
+    cmdline_buf = ctypes.create_unicode_buffer(cmdline)
+
+    env = os.environ.copy()
+    if gimp_lib_dir:
+        env["PATH"] = gimp_lib_dir + os.pathsep + env.get("PATH", "")
+    env_block = "\0".join(f"{k}={v}" for k, v in env.items()) + "\0\0"
+    env_buf = ctypes.create_unicode_buffer(env_block)
+
+    si = _STARTUPINFOW()
+    si.cb = ctypes.sizeof(si)
+    si.dwFlags = _STARTF_USESTDHANDLES
+    si.cbReserved2 = reserved2_size
+    si.lpReserved2 = ctypes.cast(reserved2_buf, ctypes.POINTER(ctypes.c_ubyte))
+    si.hStdInput = _INVALID_HANDLE_VALUE
+    si.hStdOutput = _INVALID_HANDLE_VALUE
+    # stderr は親の stderr をそのまま継承させ、GLib 警告を親コンソールに
+    si.hStdError = msvcrt.get_osfhandle(sys.stderr.fileno()) \
+        if sys.stderr and not sys.stderr.closed else _INVALID_HANDLE_VALUE
+    if si.hStdError != _INVALID_HANDLE_VALUE:
+        _kernel32.SetHandleInformation(
+            si.hStdError, _HANDLE_FLAG_INHERIT, _HANDLE_FLAG_INHERIT,
+        )
+
+    pi = _PROCESS_INFORMATION()
+    ok = _kernel32.CreateProcessW(
+        None, cmdline_buf, None, None,
+        True,  # bInheritHandles
+        _CREATE_UNICODE_ENVIRONMENT,
+        ctypes.cast(env_buf, ctypes.c_void_p),
+        None,
+        ctypes.byref(si), ctypes.byref(pi),
+    )
+    if not ok:
+        err = ctypes.WinError()
+        # 失敗したら自分の fd を閉じる
+        for fd in (parent_read_fd, parent_write_fd,
+                   plugin_read_fd, plugin_write_fd):
+            try: os.close(fd)
+            except OSError: pass
+        raise err
+
+    # 4. 親側で子側 fd を閉じる（子だけが持つ状態に）
     os.close(plugin_read_fd)
     os.close(plugin_write_fd)
 
     read_stream = os.fdopen(parent_read_fd, "rb", buffering=0)
     write_stream = os.fdopen(parent_write_fd, "wb", buffering=0)
 
+    child = _Win32ChildHandle(
+        process_handle=pi.hProcess,
+        thread_handle=pi.hThread,
+        pid=pi.dwProcessId,
+        stderr_stream=None,
+    )
+
     return PluginProcess(
-        process=proc,
+        process=child,
         read_from_plugin=read_stream,
         write_to_plugin=write_stream,
     )
 
 
-def _spawn_plugin_posix(exe_path: str) -> PluginProcess:
+def _spawn_plugin_posix(
+    exe_path: str, gimp_lib_dir: Optional[str] = None
+) -> PluginProcess:
     """
     @brief  POSIX (Mac/Linux) での起動。
 
@@ -739,11 +945,18 @@ def _spawn_plugin_posix(exe_path: str) -> PluginProcess:
         "0",
     ]
 
+    # 子プロセス環境: gimp_lib_dir を DYLD_LIBRARY_PATH / LD_LIBRARY_PATH に追加
+    env = os.environ.copy()
+    if gimp_lib_dir:
+        var = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+        env[var] = gimp_lib_dir + os.pathsep + env.get(var, "")
+
     try:
         proc = subprocess.Popen(
             argv,
             close_fds=True,
             pass_fds=(plugin_read_fd, plugin_write_fd),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -768,11 +981,19 @@ def _spawn_plugin_posix(exe_path: str) -> PluginProcess:
     )
 
 
-def spawn_plugin(exe_path: str) -> PluginProcess:
-    """@brief  プラットフォーム別の起動関数ディスパッチ。"""
+def spawn_plugin(
+    exe_path: str, gimp_lib_dir: Optional[str] = None
+) -> PluginProcess:
+    """
+    @brief  プラットフォーム別の起動関数ディスパッチ。
+    @param  gimp_lib_dir  libgimp-3.0-0.dll などが置かれたディレクトリ。
+                          Windows では PATH に、Mac/Linux では
+                          DYLD_LIBRARY_PATH / LD_LIBRARY_PATH に前置。
+                          None なら子の環境に変更を加えない。
+    """
     if sys.platform.startswith("win"):
-        return _spawn_plugin_windows(exe_path)
-    return _spawn_plugin_posix(exe_path)
+        return _spawn_plugin_windows(exe_path, gimp_lib_dir)
+    return _spawn_plugin_posix(exe_path, gimp_lib_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -780,18 +1001,23 @@ def spawn_plugin(exe_path: str) -> PluginProcess:
 # ---------------------------------------------------------------------------
 
 
-def query_plugin(exe_path: str, verbose: bool = False) -> PluginMetadata:
+def query_plugin(
+    exe_path: str,
+    verbose: bool = False,
+    gimp_lib_dir: Optional[str] = None,
+) -> PluginMetadata:
     """
     @brief  1 つの EXE をクエリモードで起動してメタデータを収集する。
 
-    @param  exe_path プラグイン EXE のフルパス
-    @param  verbose  詳細ログを stderr に出すかどうか
+    @param  exe_path     プラグイン EXE のフルパス
+    @param  verbose      詳細ログを stderr に出すかどうか
+    @param  gimp_lib_dir 子の DLL 解決用ディレクトリ（spawn_plugin 参照）
     @return 収集済み PluginMetadata（失敗時は meta.error に理由）
     """
     meta = PluginMetadata(exe_path=exe_path)
 
     try:
-        pp = spawn_plugin(exe_path)
+        pp = spawn_plugin(exe_path, gimp_lib_dir)
     except Exception as exc:
         meta.error = f"spawn failed: {exc}"
         return meta
@@ -949,6 +1175,25 @@ def load_search_paths(config_path: str) -> list[str]:
         raw_paths = defaults_map[platform_key]
 
     return [_expand_placeholders(p) for p in raw_paths]
+
+
+def load_gimp_lib_dir(config_path: str) -> Optional[str]:
+    """
+    @brief  bridge_config.json から gimp_lib_dir を取得してプレースホルダー展開。
+
+    @return 展開済みパス。設定不在 or キー無しなら None
+    """
+    platform_key = "mac" if sys.platform == "darwin" else "windows"
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        raw = cfg.get(platform_key, {}).get("gimp_lib_dir", "")
+        if not raw:
+            return None
+        return _expand_placeholders(raw)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1218,9 +1463,11 @@ def main() -> int:
     print(f"[scan] config={args.config}", file=sys.stderr)
 
     search_paths = load_search_paths(args.config)
+    gimp_lib_dir = load_gimp_lib_dir(args.config)
     print(
         f"[scan] search_paths={search_paths}", file=sys.stderr
     )
+    print(f"[scan] gimp_lib_dir={gimp_lib_dir}", file=sys.stderr)
 
     exes = enumerate_exes(search_paths)
     print(f"[scan] found {len(exes)} candidate executables",
@@ -1229,7 +1476,7 @@ def main() -> int:
     candidates: list[PluginMetadata] = []
     for exe in exes:
         print(f"[scan] querying {exe}", file=sys.stderr)
-        meta = query_plugin(exe, verbose=args.verbose)
+        meta = query_plugin(exe, verbose=args.verbose, gimp_lib_dir=gimp_lib_dir)
         if meta.is_valid:
             candidates.append(meta)
             print(
