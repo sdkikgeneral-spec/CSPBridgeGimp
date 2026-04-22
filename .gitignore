@@ -47,9 +47,13 @@ MinSizeRel/
 # Doxygen
 docs/doxygen/
 
+# FilterPlugIn
+FilterPlugIn/
+
 # Temp / OS
 *.tmp
 *.bak
 Thumbs.db
 desktop.ini
 .DS_Store
+.gimp_refs/
