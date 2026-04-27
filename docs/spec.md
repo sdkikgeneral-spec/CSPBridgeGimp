@@ -465,9 +465,14 @@ offset  size        content
 
 ### 6.2 meson.build 抜粋（実装と整合）
 
+> **MSVC 注意**: MSVC は `cpp_std=c++23` を `default_options` で受け付けない（`c++latest` が正しい値）。
+> `default_options` から `cpp_std` を外し、コンパイラ検出後に `add_project_arguments` で分岐する。
+> GCC/Clang: `-std=c++23`、MSVC: `/std:c++latest`。実機検証済み（VS 19.50）。
+> また `files()` は存在しないファイルでエラーになるため、`fs.exists()` で段階的に追加する。
+
 ```meson
 # meson.build（概略）
-project('CSPBridgeGimp', 'cpp', version: '0.1.0', default_options: ['cpp_std=c++23'])
+project('CSPBridgeGimp', 'cpp', version: '0.1.0')  # cpp_std は下記で分岐設定
 
 # config/bridge_config.json から install 先を取得
 py = import('python').find_installation('python3', required: true)

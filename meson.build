@@ -1,7 +1,6 @@
 project('CSPBridgeGimp', 'cpp',
     version: '0.1.0',
     default_options: [
-        'cpp_std=c++23',
         'warning_level=3',
     ]
 )
@@ -13,6 +12,14 @@ host_os  = host_machine.system()     # 'windows' or 'darwin'
 cpu      = host_machine.cpu_family() # 'x86_64' or 'aarch64'
 compiler = meson.get_compiler('cpp')
 is_msvc  = compiler.get_id() == 'msvc' or compiler.get_id() == 'clang-cl'
+fs       = import('fs')
+
+# C++ 標準: MSVC は /std:c++latest (= C++23), GCC/Clang は -std=c++23
+if is_msvc
+    add_project_arguments('/std:c++latest', language: 'cpp')
+else
+    add_project_arguments('-std=c++23', language: 'cpp')
+endif
 
 # ----------------------------------------------------------------------------
 # プラットフォーム別コンパイルフラグ・定義
@@ -144,8 +151,11 @@ common_deps += platform_deps
 
 # ----------------------------------------------------------------------------
 # コアソース（全 DLL およびテストで共有するスタティックライブラリ）
+#
+# フェーズ 1 は段階的に実装するため、まだ存在しないファイルは fs.exists() で
+# スキップする。実装が追加されるたびに自動的にビルド対象に加わる。
 # ----------------------------------------------------------------------------
-srcs = files(
+all_src_candidates = [
     'src/config/config.cpp',
     'src/host/host.cpp',
     'src/host/pdb_stubs.cpp',
@@ -154,7 +164,13 @@ srcs = files(
     'src/ipc/wire_io.cpp',
     'src/csp/plugin_entry.cpp',
     'src/csp/buffer.cpp',
-)
+]
+srcs = []
+foreach f : all_src_candidates
+    if fs.exists(f)
+        srcs += files(f)
+    endif
+endforeach
 
 core_lib = static_library('CSPBridgeGimpCore', srcs,
     dependencies: common_deps,
@@ -211,19 +227,28 @@ else
 endif
 
 # ----------------------------------------------------------------------------
-# テスト
+# テスト（実装済みのテストファイルのみ順次追加）
 # ----------------------------------------------------------------------------
-test_srcs = files(
+all_test_candidates = [
     'tests/test_config.cpp',
     'tests/test_tile_transfer.cpp',
     'tests/test_buffer.cpp',
     'tests/test_wire_io.cpp',
     'tests/test_concurrency.cpp',
-)
+]
+test_srcs = []
+foreach f : all_test_candidates
+    if fs.exists(f)
+        test_srcs += files(f)
+    endif
+endforeach
 
-test_exe = executable('cspbridge_tests', test_srcs,
-    dependencies: [catch2_dep, nlohmann_json_dep, boost_dep] + platform_deps,
-    link_with:    core_lib,
-)
-
-test('unit tests', test_exe)
+if test_srcs.length() > 0
+    test_exe = executable('cspbridge_tests', test_srcs,
+        dependencies: [catch2_dep, nlohmann_json_dep, boost_dep] + platform_deps,
+        link_with:    core_lib,
+    )
+    test('unit tests', test_exe)
+else
+    warning('テストファイルが見つかりません。tests/ 配下のファイルを実装してください。')
+endif
