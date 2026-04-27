@@ -624,27 +624,56 @@ endif
 
 ### 6.1 子プロセス起動
 
-**Boost.Process** を使用してプラットフォーム差異を吸収する。`CreateProcess`（Windows）/ `fork+exec`（Mac）の個別実装は不要。
+**Boost.Process は使用しない**。GIMP プラグインの Windows 起動には
+`STARTUPINFO.lpReserved2` に MSVCRT fd-inherit ブロックを埋め込む必要があり、
+Boost.Process ではこれができないことが実機検証で確認されている（2026-04-22 確認済み）。
+
+PoC 現フェーズでは Boost.Process を利用不可として扱い、OS 別に直接実装する。
+
+| OS | 実装方式 |
+|---|---|
+| Windows | `CreateProcessW` + `STARTUPINFO.lpReserved2`（MSVCRT fd-inherit ブロック） |
+| Mac | `fork` + `execv` + POSIX pipes（`dup2` で fd を 3/4 に移動） |
+
+実装は `tools/scanner/scan_and_select.py` の `_spawn_plugin_windows()` /
+`_spawn_plugin_posix()` / `_build_msvcrt_inherit_block()` を C++ に移植したもの。
+詳細は `src/ipc/process.cpp` を参照。
+
+**公開 API（`src/ipc/process.h`）**:
 
 ```cpp
-// process.cpp — Win/Mac 共通
-#include <boost/process.hpp>
-namespace bp = boost::process;
+/// GIMP プラグインモード
+enum class PluginMode { Query, Run };
 
-bp::child LaunchPlugin(const std::string& exePath,
-                       bp::ipstream& outStream,
-                       bp::opstream& inStream)
+/// 起動中のプロセスを保持する構造体
+struct PluginProcess
 {
-    return bp::child(
-        exePath,
-        bp::std_out > outStream,
-        bp::std_in  < inStream
-    );
-}
+    int readFd;   ///< ホストがプラグインから読む fd（親側）
+    int writeFd;  ///< ホストがプラグインへ書く fd（親側）
+#ifdef _WIN32
+    HANDLE m_hProcess;
+    HANDLE m_hThread;
+#else
+    pid_t m_pid;
+#endif
+};
+
+/// 起動（失敗時は std::runtime_error を投げる）
+PluginProcess SpawnPlugin(
+    const std::string& exePath,
+    const std::string& gimpLibDir,
+    PluginMode mode,
+    int protocolVersion = 0x0117);   // GIMP 3.2 = 279
+
+int  WaitPlugin(PluginProcess& proc, int timeoutMs = -1);
+void TerminatePlugin(PluginProcess& proc);
+void ClosePlugin(PluginProcess& proc);
 ```
 
-- `bp::ipstream` / `bp::opstream` がパイプを抽象化し、`libgimpwire` の read/write に渡す
-- 子プロセス終了検知: `child.wait()` または `child.running()` で監視
+- readFd / writeFd の close は呼び出し側（wire_io 層）の責務
+- 子プロセス終了検知: パイプ読み取りで 0 バイト（EOF）→ 子がクラッシュまたは正常終了
+- 子への argv: `<progname> -gimp <protocolVersion> 3 4 <-query|-run> 0`
+- Windows の PATH 追加・Mac の DYLD_LIBRARY_PATH 追加は SpawnPlugin 内部で行う
 
 ### 6.2 Wire Protocol 通信（`wire_io.cpp`）
 
