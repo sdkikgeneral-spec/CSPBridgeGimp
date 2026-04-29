@@ -245,8 +245,12 @@ foreach f : all_test_candidates
 endforeach
 
 if test_srcs.length() > 0
+    test_deps = [catch2_dep, nlohmann_json_dep] + platform_deps
+    if boost_dep.found()
+        test_deps += boost_dep
+    endif
     test_exe = executable('cspbridge_tests', test_srcs,
-        dependencies: [catch2_dep, nlohmann_json_dep, boost_dep] + platform_deps,
+        dependencies: test_deps,
         link_with:    core_lib,
     )
     test('unit tests', test_exe)

@@ -478,9 +478,18 @@ GpParam WireChannel::ReadParamValue()
     }
 
     case GpParamType::Curve:
-        // GIMP 3.2 追加。フォーマット不明のため未対応。
-        // クエリフェーズの PDB コールバックでは通常発生しない。
-        throw WireError("ReadParamValue: GP_PARAM_TYPE_CURVE not yet supported");
+    {
+        // GIMP 3.2 追加 (protocol 0x0117)。可変長フォーマット（spec.md §10.4 参照）:
+        //   uint32 curve_type, uint32 n_points, uint32 n_samples,
+        //   double[2*n_points] points, uint32[n_points] point_types, double[n_samples] samples
+        ReadUint32();                              // curve_type (捨てる)
+        const uint32_t nPoints  = ReadUint32();
+        const uint32_t nSamples = ReadUint32();
+        SkipBytes(2u * nPoints  * 8u);            // points[]      (double × 2n)
+        SkipBytes(nPoints       * 4u);            // point_types[] (uint32 × n)
+        SkipBytes(nSamples      * 8u);            // samples[]     (double × n)
+        break;
+    }
 
     default:
         throw WireError("ReadParamValue: unknown GpParamType");
@@ -924,8 +933,10 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
 
             case GpMessageType::ProcReturn:
             {
-                // フィルター完了 — 戻り値を読み捨てて終了
-                GpProcRunMsg result = m_channel.ReadProcRun(); // 同形式
+                // フィルター完了 — 戻り値を読み捨てて終了。
+                // GP_PROC_RETURN と GP_PROC_RUN のペイロードは同一形式（GIMP Wire Protocol 仕様）:
+                //   string name, uint32 n_params, GPParam[n_params]
+                GpProcRunMsg result = m_channel.ReadProcRun();
                 (void)result;
                 goto done;
             }
