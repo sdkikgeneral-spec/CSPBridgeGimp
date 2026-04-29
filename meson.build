@@ -231,6 +231,7 @@ endif
 # ----------------------------------------------------------------------------
 all_test_candidates = [
     'tests/test_config.cpp',
+    'tests/test_pdb_stubs.cpp',
     'tests/test_tile_transfer.cpp',
     'tests/test_buffer.cpp',
     'tests/test_wire_io.cpp',

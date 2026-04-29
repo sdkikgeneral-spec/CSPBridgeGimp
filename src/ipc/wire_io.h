@@ -254,6 +254,15 @@ public:
      */
     void WriteString(const std::string& s);
 
+    /** @brief  Big-Endian IEEE 754 double を書く */
+    void WriteDouble(double v);
+
+    /** @brief  n バイトをそのまま書く（タイルデータ送信等に使用） */
+    void WriteBytes(const uint8_t* data, uint32_t n);
+
+    /** @brief  n バイト読み込んで捨てる（タイルデータ読み飛ばし等に使用） */
+    void SkipBytes(uint32_t n);
+
     // -----------------------------------------------------------------------
     // メッセージ読み取り（message type の uint32 は呼び出し前に消費済みであること）
     // -----------------------------------------------------------------------
@@ -311,12 +320,13 @@ private:
     GpParamDef ReadParamDef();
     GpParam    ReadParamValue();
     void       SkipGeglColor();
-    void       SkipBytes(uint32_t n);
 };
 
 // ---------------------------------------------------------------------------
 // PluginSession
 // ---------------------------------------------------------------------------
+
+class HostContext; ///< src/host/pdb_stubs.h で定義。run モードの PDB ディスパッチに使用
 
 /**
  * @brief GIMP プラグイン 1 プロセスとの通信セッションを管理するクラス
@@ -337,15 +347,17 @@ class PluginSession
 public:
     /**
      * @brief  コンストラクター。子プロセスを起動してスレッドを開始する
-     * @param  exePath     GIMP プラグイン EXE のフルパス
-     * @param  gimpLibDir  libgimp-3.0-0.dll 等があるディレクトリ
-     * @param  mode        Query / Run（デフォルト Run）
+     * @param  exePath      GIMP プラグイン EXE のフルパス
+     * @param  gimpLibDir   libgimp-3.0-0.dll 等があるディレクトリ
+     * @param  mode         Query / Run（デフォルト Run）
+     * @param  hostContext  PDB ディスパッチ先（Run モード専用、nullptr 可）
      * @throws std::runtime_error プロセス起動に失敗した場合
      */
     explicit PluginSession(
         const std::string& exePath,
         const std::string& gimpLibDir,
-        PluginMode mode = PluginMode::Run);
+        PluginMode         mode        = PluginMode::Run,
+        HostContext*       hostContext = nullptr);
 
     /**
      * @brief  クエリフェーズ完了を待つ Future を返す（Query モード専用）
@@ -357,9 +369,13 @@ public:
     /**
      * @brief  フィルターを非同期実行する（Run モード専用）
      *
-     * @param  params  フィルターパラメーター
-     * @return 処理完了を通知する std::future
-     * @note   タイル転送は step 9 で実装。現 PoC では std::logic_error を返す stub
+     * 呼び出すとワーカースレッドにフィルターパラメーターを渡し、
+     * 処理完了を通知する std::future を返す。
+     * タイルデータは step 9 で実装（step 8 ではゼロ埋めスタブ）。
+     *
+     * @param  params  フィルターパラメーター（プロシージャ名 + 引数）
+     * @return 処理完了または例外を通知する std::future<void>
+     * @note   RunFilter() は 1 セッションにつき 1 回のみ呼び出し可
      */
     std::future<void> RunFilter(const FilterParams& params);
 
@@ -373,9 +389,16 @@ private:
     PluginProcess m_proc;
     WireChannel   m_channel;
     PluginMode    m_mode;
+    HostContext*  m_hostContext; ///< 借用ポインタ（Run モード時に PDB dispatch で使用）
 
+    // Query モード用
     std::promise<QueryResult>       m_queryPromise;
     std::shared_future<QueryResult> m_queryFuture;
+
+    // Run モード用（1 セッション 1 回限り）
+    std::promise<FilterParams>       m_filterParamsPromise;
+    std::shared_future<FilterParams> m_filterParamsFuture;
+    std::promise<void>               m_filterDonePromise;
 
     std::jthread m_worker;
 

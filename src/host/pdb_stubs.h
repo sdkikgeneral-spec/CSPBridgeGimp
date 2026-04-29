@@ -1,0 +1,72 @@
+/**
+ * @file   pdb_stubs.h
+ * @brief  run フェーズで必要な最小 PDB スタブ — HostContext クラスの定義
+ * @author CSPBridgeGimp
+ * @date   2026-04-29
+ *
+ * HostContext は CSP 画像バッファのメタデータ（幅・高さ等）を保持し、
+ * GIMP プラグインからの GP_PROC_RUN (PDB 呼び出し) を解釈して
+ * 適切な GP_PROC_RETURN を返す。spec.md §9 参照。
+ *
+ * std::shared_mutex で保護されており、複数 PluginSession スレッドが
+ * 同一 HostContext を参照するシナリオ（step 11 以降）でもスレッドセーフ。
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <shared_mutex>
+
+#include "../ipc/wire_io.h"
+
+// ---------------------------------------------------------------------------
+// HostContext
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief ホスト側の画像バッファ情報を保持し、PDB スタブを提供するクラス
+ *
+ * GIMP プラグインが GP_PROC_RUN で呼び出す PDB プロシージャに対し、
+ * CSP バッファのメタデータ（幅・高さ・タイプ）を元に応答する。
+ *
+ * CSP バッファへの実データアクセス（タイル転送）は step 9 で実装する。
+ * spec.md §9 参照。
+ */
+class HostContext
+{
+public:
+    /** @brief ダミー image ID（run フェーズでは常に 1） */
+    static constexpr int32_t IMAGE_ID        = 1;
+    /** @brief ダミー drawable ID（run フェーズでは常に 1） */
+    static constexpr int32_t DRAWABLE_ID     = 1;
+    /** @brief GIMP_IMAGE_TYPE_RGBA = 1 (libgimpbase/gimpbasetypes.h) */
+    static constexpr int32_t IMAGE_TYPE_RGBA = 1;
+
+    /**
+     * @brief  コンストラクター
+     * @param  width   対象画像の幅 (px)
+     * @param  height  対象画像の高さ (px)
+     */
+    explicit HostContext(uint32_t width, uint32_t height);
+
+    /**
+     * @brief  GP_PROC_RUN メッセージに応じた GP_PROC_RETURN を channel に書く
+     *
+     * 認識したプロシージャ名には適切な戻り値を返し、
+     * 未知のプロシージャには status=GIMP_PDB_SUCCESS のみを返す。
+     *
+     * @param  msg      読み取り済みの GpProcRunMsg
+     * @param  channel  書き込み先 WireChannel（ProcReturn を書く）
+     */
+    void Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const;
+
+    /** @brief 幅 (px) を返す */
+    uint32_t Width()  const;
+    /** @brief 高さ (px) を返す */
+    uint32_t Height() const;
+
+private:
+    mutable std::shared_mutex m_mutex;
+    uint32_t                  m_width;
+    uint32_t                  m_height;
+};

@@ -16,9 +16,13 @@
 
 #include "wire_io.h"
 
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#include "../host/pdb_stubs.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -205,6 +209,36 @@ void WireChannel::WriteString(const std::string& s)
     WriteExact(&nul, 1);
 }
 
+void WireChannel::WriteDouble(double v)
+{
+    uint64_t u;
+    std::memcpy(&u, &v, sizeof(u));
+    const uint8_t b[8] = {
+        static_cast<uint8_t>(u >> 56u),
+        static_cast<uint8_t>(u >> 48u),
+        static_cast<uint8_t>(u >> 40u),
+        static_cast<uint8_t>(u >> 32u),
+        static_cast<uint8_t>(u >> 24u),
+        static_cast<uint8_t>(u >> 16u),
+        static_cast<uint8_t>(u >>  8u),
+        static_cast<uint8_t>(u),
+    };
+    WriteExact(b, 8);
+}
+
+void WireChannel::WriteBytes(const uint8_t* data, uint32_t n)
+{
+    if (n > 0u)
+        WriteExact(data, static_cast<size_t>(n));
+}
+
+void WireChannel::SkipBytes(uint32_t n)
+{
+    std::vector<uint8_t> buf(n);
+    if (n > 0u)
+        ReadExact(buf.data(), n);
+}
+
 // ---------------------------------------------------------------------------
 // WireChannel — GeglColor 読み飛ばし
 //
@@ -215,13 +249,6 @@ void WireChannel::WriteString(const std::string& s)
 //   uint32 icc_length
 //   icc_length bytes
 // ---------------------------------------------------------------------------
-
-void WireChannel::SkipBytes(uint32_t n)
-{
-    std::vector<uint8_t> buf(n);
-    if (n > 0u)
-        ReadExact(buf.data(), n);
-}
 
 void WireChannel::SkipGeglColor()
 {
@@ -533,11 +560,14 @@ void WireChannel::WriteConfig(uint32_t protocolVersion, uint32_t tileWidth, uint
 PluginSession::PluginSession(
     const std::string& exePath,
     const std::string& gimpLibDir,
-    PluginMode mode)
+    PluginMode         mode,
+    HostContext*       hostContext)
     : m_proc(SpawnPlugin(exePath, gimpLibDir, mode))
     , m_channel(m_proc.readFd, m_proc.writeFd)
     , m_mode(mode)
+    , m_hostContext(hostContext)
     , m_queryFuture(m_queryPromise.get_future().share())
+    , m_filterParamsFuture(m_filterParamsPromise.get_future().share())
 {
     if (mode == PluginMode::Query)
     {
@@ -606,13 +636,11 @@ std::shared_future<QueryResult> PluginSession::GetQueryFuture() const
     return m_queryFuture;
 }
 
-std::future<void> PluginSession::RunFilter(const FilterParams& /*params*/)
+std::future<void> PluginSession::RunFilter(const FilterParams& params)
 {
-    // step 9 で実装（tile_transfer 完成後）
-    std::promise<void> p;
-    p.set_exception(std::make_exception_ptr(
-        std::logic_error("RunFilter: not yet implemented (step 9)")));
-    return p.get_future();
+    // ワーカースレッドにフィルターパラメーターを渡し、完了 future を返す
+    m_filterParamsPromise.set_value(params);
+    return m_filterDonePromise.get_future();
 }
 
 // ---------------------------------------------------------------------------
@@ -737,11 +765,187 @@ done:
 }
 
 // ---------------------------------------------------------------------------
-// PluginSession — run フェーズ Worker（step 8/9 で完成）
+// PluginSession — run フェーズ Worker
+//
+// フロー（spec.md §8 / §9）:
+//   1. RunFilter() がフィルターパラメーターを set するまで待機
+//   2. GP_CONFIG 送信（run モード開始）
+//   3. GP_PROC_RUN 送信（ホストからプラグインのフィルタープロシージャを呼び出す）
+//   4. ループ: GP_PROC_RUN (PDB コールバック) / GP_TILE_REQ を受信して応答
+//      GP_PROC_RETURN (フィルター完了) / GP_QUIT で抜ける
+//   5. GP_QUIT 送信
+//   6. m_filterDonePromise に結果を set
+//
+// タイルデータは step 8 ではゼロ埋めスタブ。step 9 で CSP バッファ連携を実装する。
 // ---------------------------------------------------------------------------
 
-void PluginSession::WorkerRunLoop(std::stop_token /*stopToken*/)
+void PluginSession::WorkerRunLoop(std::stop_token stopToken)
 {
-    // step 8/9 で実装。現フェーズは placeholder のみ。
-    // RunFilter() が std::logic_error を返すため、このループは呼び出されない。
+    try
+    {
+        // 1. RunFilter() からフィルターパラメーターが来るまで待機
+        while (!stopToken.stop_requested())
+        {
+            if (m_filterParamsFuture.wait_for(std::chrono::milliseconds(50))
+                    == std::future_status::ready)
+                break;
+        }
+        if (stopToken.stop_requested())
+            return; // デストラクターが RunFilter() 前に呼ばれた場合の正常退場
+
+        FilterParams params = m_filterParamsFuture.get();
+
+        // 2. GP_CONFIG — run モード開始
+        m_channel.WriteConfig();
+
+        // 3. GP_PROC_RUN でプラグインのフィルタープロシージャを呼び出す
+        {
+            const uint32_t nParams = 3u + static_cast<uint32_t>(params.args.size());
+            m_channel.WriteUint32(static_cast<uint32_t>(GpMessageType::ProcRun));
+            m_channel.WriteString(params.procedureName);
+            m_channel.WriteUint32(nParams);
+
+            // param[0]: run_mode = GIMP_RUN_NONINTERACTIVE = 1
+            m_channel.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+            m_channel.WriteString("GimpRunMode");
+            m_channel.WriteInt32(1);
+
+            // param[1]: image_id
+            m_channel.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+            m_channel.WriteString("GimpImage");
+            m_channel.WriteInt32(HostContext::IMAGE_ID);
+
+            // param[2]: drawable_id
+            m_channel.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+            m_channel.WriteString("GimpDrawable");
+            m_channel.WriteInt32(HostContext::DRAWABLE_ID);
+
+            // param[3..]: フィルター固有引数（type_name は PoC のため空）
+            for (const auto& arg : params.args)
+            {
+                m_channel.WriteUint32(static_cast<uint32_t>(arg.paramType));
+                m_channel.WriteString(""); // type_name: PoC 簡略化
+                switch (arg.paramType)
+                {
+                case GpParamType::Int:
+                    m_channel.WriteInt32(arg.intValue);
+                    break;
+                case GpParamType::Double:
+                    m_channel.WriteDouble(arg.doubleValue);
+                    break;
+                case GpParamType::String:
+                case GpParamType::File:
+                    m_channel.WriteString(arg.stringValue);
+                    break;
+                default:
+                    m_channel.WriteInt32(0); // サポート外型: 0 フォールバック
+                    break;
+                }
+            }
+        }
+
+        // 4. PDB ディスパッチ / タイル転送ループ
+        while (!stopToken.stop_requested())
+        {
+            uint32_t msgType;
+            try
+            {
+                msgType = m_channel.ReadUint32();
+            }
+            catch (const WireError&)
+            {
+                break; // EOF: プラグインが終了
+            }
+
+            switch (static_cast<GpMessageType>(msgType))
+            {
+            case GpMessageType::ProcRun:
+            {
+                // プラグインからの PDB 呼び出し — HostContext に dispatch
+                GpProcRunMsg msg = m_channel.ReadProcRun();
+                if (m_hostContext)
+                    m_hostContext->Dispatch(msg, m_channel);
+                else
+                    m_channel.WriteProcReturn(msg.name);
+                break;
+            }
+
+            case GpMessageType::TileReq:
+            {
+                // タイル読み取り要求（step 8 スタブ: ゼロ埋めタイルを返す）
+                const uint32_t drawableId = m_channel.ReadUint32();
+                const uint32_t tileNum    = m_channel.ReadUint32();
+                const uint32_t shadow     = m_channel.ReadUint32();
+
+                // TileAck
+                m_channel.WriteUint32(static_cast<uint32_t>(GpMessageType::TileAck));
+                m_channel.WriteUint32(drawableId);
+                m_channel.WriteUint32(tileNum);
+                m_channel.WriteUint32(shadow);
+
+                // TileData — ゼロ埋め 64x64 RGBA タイル
+                constexpr uint32_t BPP = 4u;
+                constexpr uint32_t TW  = GIMP_TILE_WIDTH;  // 64
+                constexpr uint32_t TH  = GIMP_TILE_HEIGHT; // 64
+                static const std::vector<uint8_t> zeros(TW * TH * BPP, 0u);
+
+                m_channel.WriteUint32(static_cast<uint32_t>(GpMessageType::TileData));
+                m_channel.WriteUint32(drawableId);
+                m_channel.WriteUint32(tileNum);
+                m_channel.WriteUint32(shadow);
+                m_channel.WriteUint32(BPP);
+                m_channel.WriteUint32(TW);
+                m_channel.WriteUint32(TH);
+                m_channel.WriteBytes(zeros.data(), static_cast<uint32_t>(zeros.size()));
+                break;
+            }
+
+            case GpMessageType::TileAck:
+            {
+                // プラグインが修正タイルを書き戻す前の通知 — 次の TileData を受信
+                m_channel.ReadUint32(); // drawableId
+                m_channel.ReadUint32(); // tileNum
+                m_channel.ReadUint32(); // shadow
+                break;
+            }
+
+            case GpMessageType::TileData:
+            {
+                // プラグインからの修正タイル受信（step 8 スタブ: 読み捨て）
+                m_channel.ReadUint32(); // drawableId
+                m_channel.ReadUint32(); // tileNum
+                m_channel.ReadUint32(); // shadow
+                const uint32_t bpp = m_channel.ReadUint32();
+                const uint32_t w   = m_channel.ReadUint32();
+                const uint32_t h   = m_channel.ReadUint32();
+                m_channel.SkipBytes(w * h * bpp);
+                break;
+            }
+
+            case GpMessageType::ProcReturn:
+            {
+                // フィルター完了 — 戻り値を読み捨てて終了
+                GpProcRunMsg result = m_channel.ReadProcRun(); // 同形式
+                (void)result;
+                goto done;
+            }
+
+            case GpMessageType::Quit:
+                goto done;
+
+            default:
+                throw WireError("WorkerRunLoop: unexpected message type "
+                    + std::to_string(msgType));
+            }
+        }
+
+done:
+        m_channel.WriteQuit();
+        m_filterDonePromise.set_value();
+    }
+    catch (...)
+    {
+        try { m_filterDonePromise.set_exception(std::current_exception()); }
+        catch (...) {}
+    }
 }
