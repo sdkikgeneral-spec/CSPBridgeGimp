@@ -99,6 +99,85 @@ Upstream source location for each contract:
 - Per-thread scratch buffer via `thread_local std::array<uint8_t, 16384>`
 - CSP buffer protected by `std::shared_mutex` (reads: `shared_lock`, writes: `unique_lock`)
 
+## Tile Wire Protocol message sequence (confirmed 2026-04-29)
+
+Source: `libgimpbase/gimpprotocol.c` (`_gp_tile_req_read/write`, `_gp_tile_ack_read/write`, `_gp_tile_data_read/write`), `libgimp/gimptilebackendplugin.c`, `app/plug-in/gimpplugin-message.c`.
+
+### gimp_tile_get (plugin reads a tile from host)
+
+```
+plugin → host : GP_TILE_REQ  { drawable_id (int32), tile_num (uint32), shadow (uint32) }
+host   → plugin: GP_TILE_DATA { drawable_id, tile_num, shadow, bpp, width, height,
+                                use_shm (uint32), [pixel_data if use_shm==0] }
+plugin → host : GP_TILE_ACK  { (empty payload) }
+```
+
+### gimp_tile_put (plugin writes a tile back to host)
+
+```
+plugin → host : GP_TILE_REQ  { drawable_id = -1, tile_num (uint32), shadow (uint32) }
+host   → plugin: GP_TILE_DATA { drawable_id=-1, tile_num, shadow, bpp, width, height,
+                                use_shm (uint32), [pixel_data if use_shm==0] }
+  (host sends this as a "prompt" with use_shm info; pixel_data is empty/zeroed here)
+plugin → host : GP_TILE_DATA { drawable_id, tile_num, shadow, bpp, width, height,
+                                use_shm=0, pixel_data[width*height*bpp] }
+host   → plugin: GP_TILE_ACK  { (empty payload) }
+```
+
+**Key distinction**: `drawable_id == -1` is the signal that the plugin wants to PUT (write back). The host dispatches on this in `gimp_plug_in_handle_tile_request()`.
+
+### GP_TILE_REQ payload layout (libgimpbase/gimpprotocol.c `_gp_tile_req_read`)
+```
+uint32  drawable_id   (signed gint32 cast to uint32 on wire; -1 = put trigger)
+uint32  tile_num
+uint32  shadow        (0 = regular buffer, 1 = shadow buffer)
+```
+
+### GP_TILE_ACK payload
+Empty — no fields. Both `_gp_tile_ack_read` and `_gp_tile_ack_write` are empty stubs.
+
+### GP_TILE_DATA payload layout (libgimpbase/gimpprotocol.c `_gp_tile_data_read`)
+```
+uint32  drawable_id
+uint32  tile_num
+uint32  shadow
+uint32  bpp            (bytes per pixel — e.g. 4 for RGBA)
+uint32  width
+uint32  height
+uint32  use_shm        (0 = inline pixel data follows; 1 = shared memory, PoC always 0)
+uint8[] pixel_data     (only present if use_shm == 0; length = width * height * bpp)
+```
+
+### Host implementation rule for tile_put
+In `gimp_plug_in_handle_tile_put()`, the host FIRST sends a `GP_TILE_DATA` with `drawable_id=-1` and the shm configuration (use_shm=0 for PoC), then reads the plugin's `GP_TILE_DATA` carrying actual pixels, then sends `GP_TILE_ACK`. Our `tile_transfer.cpp` must replicate this exact handshake.
+
+## GP_PARAM_TYPE_CURVE (= 15) wire format (confirmed 2026-04-29)
+
+Source: `libgimpbase/gimpprotocol.c` `_gp_params_read` / `_gp_params_write`, case `GP_PARAM_TYPE_CURVE`.
+
+This is a **variable-length** type. Layout:
+
+```
+uint32   curve_type                        (GimpCurveType enum)
+uint32   n_points
+uint32   n_samples
+double[] points     [2 * n_points elements]  (each double = 8 bytes big-endian, no length prefix)
+uint32[] point_types [n_points elements]
+double[] samples    [n_samples elements]
+```
+
+To skip safely without parsing:
+```cpp
+uint32_t curve_type  = ReadUint32(fd);
+uint32_t n_points    = ReadUint32(fd);
+uint32_t n_samples   = ReadUint32(fd);
+SkipBytes(fd, 2 * n_points  * 8);   // points[] — doubles, 8 bytes each
+SkipBytes(fd, n_points      * 4);   // point_types[] — uint32
+SkipBytes(fd, n_samples     * 8);   // samples[] — doubles, 8 bytes each
+```
+
+Double wire format: each double is 8 raw bytes, big-endian (byte-swapped on little-endian hosts). Confirmed in `libgimpbase/gimpwire.c` `_gimp_wire_read_double` / `_gimp_wire_write_double`.
+
 ## Library usage
 
 | Library | Role | Notes |
