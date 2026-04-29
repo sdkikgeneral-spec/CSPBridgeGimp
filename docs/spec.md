@@ -975,7 +975,7 @@ CspBuffer RgbaToCsp(
 
 **未確認事項（実機での TODO）**:
 - TODO: 通常の RGBA レイヤーで `rIdx=0, gIdx=1, bIdx=2, effectiveAlphaIdx=3` になるかを実機確認（`src/csp/buffer.cpp` `ReadFromOffscreen` 参照）
-- TODO: `WriteToOffscreen` 後に `updateDestinationOffscreenRectProc` を呼ぶべきかを実機確認（現実装では呼ばない）
+- TODO: `WriteToOffscreen` 後に `updateDestinationOffscreenRectProc` を呼ぶべきかを実機確認（`plugin_entry.cpp` の `HandleFilterRun` では呼ぶ）
 
 #### 実装ファイル（2026-04-29 完了）
 
@@ -984,6 +984,33 @@ CspBuffer RgbaToCsp(
 - `tests/test_buffer.cpp` — 6 テストケース（Catch2）。`CspToRgba` / `RgbaToCsp` のみを検証（CSP API 不要）
 
 テスト実行: `meson test -C builddir` → All tests passed (1366 assertions in 57 test cases)
+
+### 11.2 plugin_entry 実装仕様（`src/csp/plugin_entry.cpp`）（2026-04-30 完了）
+
+#### SDK 実装上の確認済み事実
+
+| 事実 | 詳細 |
+|---|---|
+| `TriglavPlugInServer` フィールドアクセス | `pluginServer->recordSuite`（値）、`pluginServer->serviceSuite`（値）、`pluginServer->hostObject`（ポインタ）。マクロは `&recSuite` を渡す |
+| レコードマクロの引数 | `TriglavPlugInFilterInitializeSetFilterCategoryName(&recSuite, host, strObj, accessKey)` — 第 4 引数 accessKey は `'\0'` で可 |
+| `TriglavPlugInStringService::createWithAsciiStringProc` | `(out*, ascii, length)` の length は NUL を除いた文字数 |
+| `TriglavPlugInExtern.h` のプラットフォーム検出 | `#if defined(_WINDOWS)` を使用。MSVC は `_WIN32` を自動定義するが `_WINDOWS` は定義しない。`plugin_entry.cpp` の先頭で `#ifndef _WINDOWS` / `#define _WINDOWS` が必要 |
+| `WIN32_LEAN_AND_MEAN` / `NOMINMAX` | meson.build が `/D` で設定済みのため、`.cpp` 内では `#ifndef` ガード付きで定義する |
+| `core_lib` の include パス | `extern/TriglavPlugInSDK` のみ追加。`src/` は追加されない。`plugin_entry.cpp` は `"../config/config.h"` など `src/csp/` 相対パスでインクルードする |
+| `GIMP_PLUGIN_ID` の扱い | `core_lib` コンパイル時は未定義のためフォールバック `""` を使用。実際の DLL ターゲットでは meson.build から `/DGIMP_PLUGIN_ID="<id>"` が渡される |
+| Windows での DLL 自身ディレクトリ取得 | `DllMain` で `g_hModule` に `HMODULE` を保存し `GetModuleFileNameW` で取得。`DisableThreadLibraryCalls` も同時に呼ぶ |
+| Mac での dylib 自身ディレクトリ取得 | `dladdr(reinterpret_cast<void*>(&TriglavPluginCall), &info)` で `info.dli_fname` からディレクトリを取得 |
+| `HandleFilterRun` 書き戻し通知 | `runRec->updateDestinationOffscreenRectProc(hostObject, &selectRect)` を呼ぶ（実機確認は TODO） |
+
+#### plugin_entry.cpp のファイル構成
+
+```
+src/csp/plugin_entry.h   — GetModuleDir() 前方宣言のみ。他モジュールからのインクルード不要
+src/csp/plugin_entry.cpp — TriglavPluginCall + DllMain(Win) / dladdr(Mac) + 3 ハンドラー関数
+```
+
+ハンドラー関数はすべて無名 namespace 内に実装（DLL エクスポートは `TriglavPluginCall` のみ）。
+`ScopedTriglavString` RAII クラスで文字列オブジェクトのリリース漏れを防ぐ。
 
 ---
 
