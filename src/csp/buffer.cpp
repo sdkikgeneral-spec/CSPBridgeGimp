@@ -31,16 +31,17 @@ namespace
 {
 
 /**
- * @brief  getChannelOrderProc の結果が RGBAlpha かを確認する
+ * @brief  getChannelOrderProc を呼び、サポート対象か検証してオーダーを返す
  *
- * PoC スコープは RGBA 8bpc レイヤーのみサポート。
- * CMYK / グレースケール等は std::runtime_error を投げる。
+ * サポート対象: RGBAlpha (0x03), GrayAlpha (0x02)。
+ * CMYK 等は std::runtime_error を投げる。
  *
  * @param  svc       オフスクリーンサービスポインタ
  * @param  offscreen 対象オフスクリーン
- * @throws std::runtime_error  RGBA 以外のチャンネルオーダー
+ * @return           チャンネルオーダー定数
+ * @throws std::runtime_error  非サポートチャンネルオーダー
  */
-void AssertRgbaChannelOrder(
+TriglavPlugInInt GetAndValidateChannelOrder(
     const TriglavPlugInOffscreenService* svc,
     TriglavPlugInOffscreenObject         offscreen)
 {
@@ -50,20 +51,23 @@ void AssertRgbaChannelOrder(
         throw std::runtime_error("buffer: getChannelOrderProc failed");
     }
 
-    if (channelOrder != kTriglavPlugInOffscreenChannelOrderRGBAlpha)
+    if (channelOrder == kTriglavPlugInOffscreenChannelOrderRGBAlpha ||
+        channelOrder == kTriglavPlugInOffscreenChannelOrderGrayAlpha)
     {
-        // GIMP Wire Protocol の tile フォーマットは RGBA 8bpc 固定（bpp=4）。
-        // CMYK / グレースケール等のタイルモードは Wire Protocol に存在しないため、
-        // PoC スコープでは RGBA レイヤー以外をサポートしない。
-        // 対処: CSP 上でレイヤーを RGBA カラーモードに変換してから実行してください。
-        throw std::runtime_error(
-            std::format("buffer: unsupported channel order 0x{:04x}"
-                        " (GIMP Wire Protocol supports RGBA 8bpc tiles only;"
-                        " convert the layer to RGBA color mode before running this plugin;"
-                        " expected RGBAlpha=0x{:04x})",
-                        static_cast<int>(channelOrder),
-                        kTriglavPlugInOffscreenChannelOrderRGBAlpha));
+        return channelOrder;
     }
+
+    // CMYK は ICC プロファイルなしのラウンドトリップが色精度上問題があるため PoC 対象外。
+    // GIMP Wire Protocol の tile フォーマットは RGBA 8bpc 固定（bpp=4）であり、
+    // CMYK tile モードは存在しない。
+    // 対処: レイヤーを RGBA またはグレースケールカラーモードに変換してから実行してください。
+    throw std::runtime_error(
+        std::format("buffer: unsupported channel order 0x{:04x}"
+                    " (supported: RGBAlpha=0x{:04x}, GrayAlpha=0x{:04x};"
+                    " convert the layer to RGBA or Grayscale color mode first)",
+                    static_cast<int>(channelOrder),
+                    kTriglavPlugInOffscreenChannelOrderRGBAlpha,
+                    kTriglavPlugInOffscreenChannelOrderGrayAlpha));
 }
 
 /**
@@ -116,10 +120,9 @@ CspBuffer ReadFromOffscreen(
 {
     assert(svc != nullptr);
 
-    // PoC スコープ: RGBA 8bpc のみサポート
-    AssertRgbaChannelOrder(svc, offscreen);
+    const auto channelOrder = GetAndValidateChannelOrder(svc, offscreen);
+    const bool isGray = (channelOrder == kTriglavPlugInOffscreenChannelOrderGrayAlpha);
 
-    // オフスクリーン幅・高さ取得（選択矩形からも計算可能だが API で確認）
     const auto width  = static_cast<uint32_t>(selectRect.right  - selectRect.left);
     const auto height = static_cast<uint32_t>(selectRect.bottom - selectRect.top);
 
@@ -128,14 +131,16 @@ CspBuffer ReadFromOffscreen(
         throw std::runtime_error("buffer: ReadFromOffscreen received empty selectRect");
     }
 
-    // RGB チャンネルインデックス取得
-    TriglavPlugInInt rIdx = 0, gIdx = 1, bIdx = 2;
-    if (svc->getRGBChannelIndexProc(&rIdx, &gIdx, &bIdx, offscreen) != kTriglavPlugInAPIResultSuccess)
+    // グレースケールは RGB チャンネルインデックスの概念がない（rIdx=gIdx=bIdx=0 固定）
+    TriglavPlugInInt rIdx = 0, gIdx = 0, bIdx = 0;
+    if (!isGray)
     {
-        throw std::runtime_error("buffer: getRGBChannelIndexProc failed");
+        if (svc->getRGBChannelIndexProc(&rIdx, &gIdx, &bIdx, offscreen) != kTriglavPlugInAPIResultSuccess)
+        {
+            throw std::runtime_error("buffer: getRGBChannelIndexProc failed");
+        }
     }
 
-    // ブロック数取得
     TriglavPlugInRect selectRectLocal = selectRect;
     TriglavPlugInInt blockCount = 0;
     if (svc->getBlockRectCountProc(&blockCount, offscreen, &selectRectLocal) != kTriglavPlugInAPIResultSuccess)
@@ -146,14 +151,15 @@ CspBuffer ReadFromOffscreen(
     // 出力バッファ初期化（pixBytes / aPixBytes は最初のブロックで確定するが
     // 全ブロックで同一であることを前提とする）
     CspBuffer result;
-    result.width             = width;
-    result.height            = height;
-    result.rIdx              = static_cast<int32_t>(rIdx);
-    result.gIdx              = static_cast<int32_t>(gIdx);
-    result.bIdx              = static_cast<int32_t>(bIdx);
-    result.pixBytes          = 0;
-    result.aPixBytes         = 0;
-    result.effectiveAlphaIdx = -1;
+    result.width                = width;
+    result.height               = height;
+    result.rIdx                 = static_cast<int32_t>(rIdx);
+    result.gIdx                 = static_cast<int32_t>(gIdx);
+    result.bIdx                 = static_cast<int32_t>(bIdx);
+    result.pixBytes             = 0;
+    result.aPixBytes            = 0;
+    result.effectiveAlphaIdx    = -1;
+    result.originalChannelOrder = static_cast<int32_t>(channelOrder);
 
     // ブロックループ
     for (TriglavPlugInInt i = 0; i < blockCount; ++i)
@@ -266,8 +272,8 @@ void WriteToOffscreen(
 {
     assert(svc != nullptr);
 
-    // PoC スコープ: RGBA 8bpc のみサポート
-    AssertRgbaChannelOrder(svc, offscreen);
+    const auto channelOrder = GetAndValidateChannelOrder(svc, offscreen);
+    const bool isGray = (channelOrder == kTriglavPlugInOffscreenChannelOrderGrayAlpha);
 
     const auto width = static_cast<uint32_t>(selectRect.right - selectRect.left);
 
@@ -278,11 +284,14 @@ void WriteToOffscreen(
         throw std::runtime_error("buffer: WriteToOffscreen getBlockRectCountProc failed");
     }
 
-    // RGB チャンネルインデックス（buf のメタデータと照合に使用）
-    TriglavPlugInInt rIdx = 0, gIdx = 1, bIdx = 2;
-    if (svc->getRGBChannelIndexProc(&rIdx, &gIdx, &bIdx, offscreen) != kTriglavPlugInAPIResultSuccess)
+    // グレースケールは getRGBChannelIndexProc が不要（ピクセルコピーは pixBytes 単位の memcpy）
+    TriglavPlugInInt rIdx = 0, gIdx = 0, bIdx = 0;
+    if (!isGray)
     {
-        throw std::runtime_error("buffer: WriteToOffscreen getRGBChannelIndexProc failed");
+        if (svc->getRGBChannelIndexProc(&rIdx, &gIdx, &bIdx, offscreen) != kTriglavPlugInAPIResultSuccess)
+        {
+            throw std::runtime_error("buffer: WriteToOffscreen getRGBChannelIndexProc failed");
+        }
     }
 
     for (TriglavPlugInInt i = 0; i < blockCount; ++i)
@@ -440,6 +449,22 @@ CspBuffer RgbaToCsp(
     {
         const auto rgbaBase = px * 4u;
         const auto imgBase  = px * pb;
+
+        if (pb == 1u)
+        {
+            // グレースケール: BT.709 輝度式で RGB → gray に縮小
+            result.imageData[imgBase] = static_cast<uint8_t>(
+                0.2126f * rgba[rgbaBase + 0u]
+                + 0.7152f * rgba[rgbaBase + 1u]
+                + 0.0722f * rgba[rgbaBase + 2u]
+                + 0.5f);
+
+            if (apb > 0)
+            {
+                result.alphaData[px * apb] = rgba[rgbaBase + 3u];
+            }
+            continue;
+        }
 
         result.imageData[imgBase + rIdx] = rgba[rgbaBase + 0]; // R
         result.imageData[imgBase + gIdx] = rgba[rgbaBase + 1]; // G

@@ -6,8 +6,11 @@
  * flat RGBA 8bpc に変換し、GIMP タイル転送層が期待するフォーマットへ橋渡しする。
  *
  * 設計上の注意点:
- *   - PoC スコープは RGBA 8bpc (kTriglavPlugInOffscreenChannelOrderRGBAlpha) のみ。
- *     それ以外のチャンネルオーダー（CMYK 等）は例外を投げてフェイルファスト。
+ *   - サポートするチャンネルオーダー（PoC スコープ）:
+ *       - kTriglavPlugInOffscreenChannelOrderRGBAlpha (0x03): RGBA 8bpc
+ *       - kTriglavPlugInOffscreenChannelOrderGrayAlpha (0x02): グレースケール 8bpc。
+ *         CspToRgba で R=G=B=gray に展開し、RgbaToCsp で BT.709 輝度式で gray に縮小する。
+ *     CMYK 等それ以外は std::runtime_error を投げてフェイルファスト。
  *   - セレクション処理は WriteToOffscreen の呼び出し元（plugin_entry.cpp）が行う。
  *     buf の imageData / alphaData には選択領域内ピクセルのみが格納される。
  *   - アルファ取得の優先順位:
@@ -49,7 +52,8 @@ struct CspBuffer
     int32_t              bIdx;           ///< getRGBChannelIndexProc で取得した B チャンネルインデックス
     int32_t              pixBytes;       ///< 画像 1px あたりのバイト数 (通常 3 or 4)
     int32_t              aPixBytes;      ///< 分離アルファ 1px あたりのバイト数 (0 = 分離アルファなし)
-    int32_t              effectiveAlphaIdx; ///< 埋め込みアルファのチャンネルインデックス (-1 = なし)
+    int32_t              effectiveAlphaIdx;    ///< 埋め込みアルファのチャンネルインデックス (-1 = なし)
+    int32_t              originalChannelOrder; ///< ReadFromOffscreen が記録した元チャンネルオーダー (0 = 未設定)
     std::vector<uint8_t> imageData;      ///< width * height * pixBytes、row-major
     std::vector<uint8_t> alphaData;      ///< width * height * aPixBytes (分離アルファありの場合のみ)
 };
@@ -60,14 +64,15 @@ struct CspBuffer
  * getBlockRectCountProc → getBlockRectProc → getBlockImageProc / getBlockAlphaProc
  * の呼び出し順で全ブロックを走査し、row-major な imageData / alphaData に詰める。
  *
- * PoC 制約: チャンネルオーダーが kTriglavPlugInOffscreenChannelOrderRGBAlpha 以外の
- * 場合は std::runtime_error を投げる。
+ * PoC 制約: RGBAlpha / GrayAlpha のみサポート。それ以外は std::runtime_error を投げる。
+ * グレースケールレイヤーの場合、pixBytes=1 で imageData にグレー値が格納される。
+ * CspToRgba() が R=G=B=gray に展開する。
  *
  * @param  svc         TriglavPlugInOffscreenService ポインタ (非 null)
  * @param  offscreen   読み取り元オフスクリーンオブジェクト
  * @param  selectRect  選択矩形（CSP キャンバス座標系）
  * @return             読み込んだピクセルデータを保持する CspBuffer
- * @throws std::runtime_error  CSP API 呼び出し失敗、または RGBA 以外のカラーモード
+ * @throws std::runtime_error  CSP API 呼び出し失敗、または非サポートカラーモード
  *
  * @note  この関数は実際の CSP 環境でしか検証できない。
  *        TODO(spec.md §11.1): 実機で getRGBChannelIndexProc の返すインデックス値を

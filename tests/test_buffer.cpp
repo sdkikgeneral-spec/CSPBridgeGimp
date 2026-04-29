@@ -283,3 +283,84 @@ TEST_CASE("Non-tile-aligned size: 100x80 RGBA roundtrip is lossless")
     REQUIRE(restored.size() == W * H * 4u);
     REQUIRE(original == restored);
 }
+
+/**
+ * TC-7: グレースケール roundtrip — pixBytes=1, aPixBytes=1
+ *
+ * R=G=B のグレー入力は RgbaToCsp (BT.709 輝度式) → CspToRgba (gray 展開) を経て
+ * R=G=B=gray のまま復元される。alpha も保持される。
+ */
+TEST_CASE("Grayscale roundtrip: pixBytes=1 aPixBytes=1 preserves gray and alpha")
+{
+    constexpr uint32_t W = 8u;
+    constexpr uint32_t H = 8u;
+
+    // R=G=B=gray 入力（輝度式の計算で誤差ゼロになる）
+    std::vector<uint8_t> original(W * H * 4u);
+    for (uint32_t i = 0; i < W * H; ++i)
+    {
+        const uint8_t gray = static_cast<uint8_t>(i % 256u);
+        original[i * 4u + 0] = gray;
+        original[i * 4u + 1] = gray;
+        original[i * 4u + 2] = gray;
+        original[i * 4u + 3] = static_cast<uint8_t>((i * 3u + 7u) % 256u);
+    }
+
+    // pixBytes=1, aPixBytes=1, rIdx=gIdx=bIdx=0（グレースケール）
+    const auto layout   = MakeTestLayout(W, H, 0, 0, 0, 1, 1);
+    const auto cspBuf   = CspBridge::RgbaToCsp(original.data(), W, H, layout);
+    const auto restored = CspBridge::CspToRgba(cspBuf);
+
+    REQUIRE(cspBuf.imageData.size() == W * H);
+    REQUIRE(cspBuf.alphaData.size() == W * H);
+
+    for (uint32_t i = 0; i < W * H; ++i)
+    {
+        // gray 値が imageData に格納されていること
+        REQUIRE(cspBuf.imageData[i] == original[i * 4u + 0]);
+        // alpha が alphaData に格納されていること
+        REQUIRE(cspBuf.alphaData[i] == original[i * 4u + 3]);
+
+        // R=G=B=gray で復元されること
+        REQUIRE(restored[i * 4u + 0] == original[i * 4u + 0]);
+        REQUIRE(restored[i * 4u + 1] == original[i * 4u + 1]);
+        REQUIRE(restored[i * 4u + 2] == original[i * 4u + 2]);
+        REQUIRE(restored[i * 4u + 3] == original[i * 4u + 3]);
+    }
+}
+
+/**
+ * TC-8: グレースケール・アルファなし — pixBytes=1, aPixBytes=0 → RGBA の A は 0xFF
+ *
+ * アルファ情報を持たないグレースケールレイアウトで、
+ * CspToRgba が A チャンネルを常に 0xFF で返すことを確認する。
+ */
+TEST_CASE("Grayscale no alpha: pixBytes=1 aPixBytes=0 produces opaque alpha")
+{
+    constexpr uint32_t W = 8u;
+    constexpr uint32_t H = 8u;
+
+    std::vector<uint8_t> original(W * H * 4u);
+    for (uint32_t i = 0; i < W * H; ++i)
+    {
+        const uint8_t gray = static_cast<uint8_t>(i % 256u);
+        original[i * 4u + 0] = gray;
+        original[i * 4u + 1] = gray;
+        original[i * 4u + 2] = gray;
+        original[i * 4u + 3] = 0xFF;
+    }
+
+    const auto layout   = MakeTestLayout(W, H, 0, 0, 0, 1, 0);
+    const auto cspBuf   = CspBridge::RgbaToCsp(original.data(), W, H, layout);
+    const auto restored = CspBridge::CspToRgba(cspBuf);
+
+    REQUIRE(restored.size() == W * H * 4u);
+    for (uint32_t i = 0; i < W * H; ++i)
+    {
+        const uint8_t gray = original[i * 4u + 0];
+        REQUIRE(restored[i * 4u + 0] == gray);
+        REQUIRE(restored[i * 4u + 1] == gray);
+        REQUIRE(restored[i * 4u + 2] == gray);
+        REQUIRE(restored[i * 4u + 3] == 0xFF);
+    }
+}
