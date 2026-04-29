@@ -173,7 +173,8 @@ foreach f : all_src_candidates
 endforeach
 
 core_lib = static_library('CSPBridgeGimpCore', srcs,
-    dependencies: common_deps,
+    dependencies:     common_deps,
+    include_directories: include_directories('extern/TriglavPlugInSDK'),
 )
 
 # ----------------------------------------------------------------------------
@@ -250,8 +251,12 @@ if test_srcs.length() > 0
         test_deps += boost_dep
     endif
     test_exe = executable('cspbridge_tests', test_srcs,
-        dependencies: test_deps,
-        link_with:    core_lib,
+        dependencies:        test_deps,
+        link_with:           core_lib,
+        include_directories: [
+            include_directories('src'),
+            include_directories('extern/TriglavPlugInSDK'),
+        ],
     )
     test('unit tests', test_exe)
 else
