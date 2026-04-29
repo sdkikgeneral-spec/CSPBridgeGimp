@@ -19,6 +19,7 @@
 HostContext::HostContext(uint32_t width, uint32_t height)
     : m_width(width)
     , m_height(height)
+    , m_rgbaBuffer(static_cast<size_t>(width) * height * 4u, 0u)
 {
 }
 
@@ -32,6 +33,21 @@ uint32_t HostContext::Height() const
 {
     std::shared_lock lock(m_mutex);
     return m_height;
+}
+
+const uint8_t* HostContext::RgbaData() const
+{
+    return m_rgbaBuffer.data();
+}
+
+uint8_t* HostContext::RgbaData()
+{
+    return m_rgbaBuffer.data();
+}
+
+std::shared_mutex& HostContext::Mutex() const
+{
+    return m_mutex;
 }
 
 // ---------------------------------------------------------------------------

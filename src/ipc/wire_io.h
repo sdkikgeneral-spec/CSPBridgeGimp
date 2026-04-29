@@ -260,6 +260,9 @@ public:
     /** @brief  n バイトをそのまま書く（タイルデータ送信等に使用） */
     void WriteBytes(const uint8_t* data, uint32_t n);
 
+    /** @brief  n バイトを buf に読み込む（タイルデータ受信等に使用） */
+    void ReadBytes(uint8_t* buf, uint32_t n);
+
     /** @brief  n バイト読み込んで捨てる（タイルデータ読み飛ばし等に使用） */
     void SkipBytes(uint32_t n);
 

@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <shared_mutex>
+#include <vector>
 
 #include "../ipc/wire_io.h"
 
@@ -29,7 +30,7 @@
  * GIMP プラグインが GP_PROC_RUN で呼び出す PDB プロシージャに対し、
  * CSP バッファのメタデータ（幅・高さ・タイプ）を元に応答する。
  *
- * CSP バッファへの実データアクセス（タイル転送）は step 9 で実装する。
+ * CSP バッファへの実データアクセス（タイル転送）は tile_transfer.cpp で実装する。
  * spec.md §9 参照。
  */
 class HostContext
@@ -46,6 +47,8 @@ public:
      * @brief  コンストラクター
      * @param  width   対象画像の幅 (px)
      * @param  height  対象画像の高さ (px)
+     *
+     * RGBA バッファを width * height * 4 バイトでゼロ初期化する。
      */
     explicit HostContext(uint32_t width, uint32_t height);
 
@@ -65,8 +68,34 @@ public:
     /** @brief 高さ (px) を返す */
     uint32_t Height() const;
 
+    /**
+     * @brief  RGBA バッファへの const ポインターを返す
+     *
+     * 呼び出し元は m_mutex を shared_lock で保護した上で使用すること。
+     * @return width * height * 4 バイトのバッファ先頭ポインター
+     */
+    const uint8_t* RgbaData() const;
+
+    /**
+     * @brief  RGBA バッファへの非 const ポインターを返す
+     *
+     * 呼び出し元は m_mutex を unique_lock で保護した上で使用すること。
+     * @return width * height * 4 バイトのバッファ先頭ポインター
+     */
+    uint8_t* RgbaData();
+
+    /**
+     * @brief  共有ミューテックスへの参照を返す
+     *
+     * tile_transfer の HandleTileRequest が shared_lock / unique_lock で
+     * バッファアクセスを保護するために使用する。
+     * @return mutable 参照（const HostContext からも取得可能）
+     */
+    std::shared_mutex& Mutex() const;
+
 private:
     mutable std::shared_mutex m_mutex;
     uint32_t                  m_width;
     uint32_t                  m_height;
+    std::vector<uint8_t>      m_rgbaBuffer; ///< width * height * 4 バイト、ゼロ初期化
 };

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "../host/pdb_stubs.h"
+#include "../host/tile_transfer.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -230,6 +231,12 @@ void WireChannel::WriteBytes(const uint8_t* data, uint32_t n)
 {
     if (n > 0u)
         WriteExact(data, static_cast<size_t>(n));
+}
+
+void WireChannel::ReadBytes(uint8_t* buf, uint32_t n)
+{
+    if (n > 0u)
+        ReadExact(buf, static_cast<size_t>(n));
 }
 
 void WireChannel::SkipBytes(uint32_t n)
@@ -881,53 +888,13 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
 
             case GpMessageType::TileReq:
             {
-                // タイル読み取り要求（step 8 スタブ: ゼロ埋めタイルを返す）
-                const uint32_t drawableId = m_channel.ReadUint32();
-                const uint32_t tileNum    = m_channel.ReadUint32();
-                const uint32_t shadow     = m_channel.ReadUint32();
-
-                // TileAck
-                m_channel.WriteUint32(static_cast<uint32_t>(GpMessageType::TileAck));
-                m_channel.WriteUint32(drawableId);
-                m_channel.WriteUint32(tileNum);
-                m_channel.WriteUint32(shadow);
-
-                // TileData — ゼロ埋め 64x64 RGBA タイル
-                constexpr uint32_t BPP = 4u;
-                constexpr uint32_t TW  = GIMP_TILE_WIDTH;  // 64
-                constexpr uint32_t TH  = GIMP_TILE_HEIGHT; // 64
-                static const std::vector<uint8_t> zeros(TW * TH * BPP, 0u);
-
-                m_channel.WriteUint32(static_cast<uint32_t>(GpMessageType::TileData));
-                m_channel.WriteUint32(drawableId);
-                m_channel.WriteUint32(tileNum);
-                m_channel.WriteUint32(shadow);
-                m_channel.WriteUint32(BPP);
-                m_channel.WriteUint32(TW);
-                m_channel.WriteUint32(TH);
-                m_channel.WriteBytes(zeros.data(), static_cast<uint32_t>(zeros.size()));
-                break;
-            }
-
-            case GpMessageType::TileAck:
-            {
-                // プラグインが修正タイルを書き戻す前の通知 — 次の TileData を受信
-                m_channel.ReadUint32(); // drawableId
-                m_channel.ReadUint32(); // tileNum
-                m_channel.ReadUint32(); // shadow
-                break;
-            }
-
-            case GpMessageType::TileData:
-            {
-                // プラグインからの修正タイル受信（step 8 スタブ: 読み捨て）
-                m_channel.ReadUint32(); // drawableId
-                m_channel.ReadUint32(); // tileNum
-                m_channel.ReadUint32(); // shadow
-                const uint32_t bpp = m_channel.ReadUint32();
-                const uint32_t w   = m_channel.ReadUint32();
-                const uint32_t h   = m_channel.ReadUint32();
-                m_channel.SkipBytes(w * h * bpp);
+                // タイル転送（GET / PUT）— HandleTileRequest に委譲
+                // GP_TILE_REQ のメッセージタイプ uint32 はすでに消費済み。
+                // drawable_id == 0xFFFFFFFF なら PUT、それ以外なら GET。
+                if (m_hostContext)
+                    HandleTileRequest(m_channel, *m_hostContext);
+                else
+                    throw WireError("TileReq received but no HostContext is set");
                 break;
             }
 
