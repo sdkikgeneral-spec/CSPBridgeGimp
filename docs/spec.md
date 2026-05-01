@@ -730,6 +730,56 @@ private:
 - `RunFilter()` を呼ぶ前にデストラクタを呼んでも安全（worker が `stop_token` を検知して正常退場する）
 - `GP_PROC_RETURN` と `GP_PROC_RUN` のペイロード形式は同一（GIMP Wire Protocol 仕様）: `string name, uint32 n_params, GPParam[n_params]`
 
+### 6.3 GP_PROC_RUN 送信フォーマット（-run モード、2026-05-01 上流確認済み）
+
+確認ソース: `libgimpbase/gimpprotocol.c` `_gp_proc_run_write` / `_gp_params_write`, `libgimp/gimpgpparams-body.c` `gimp_value_to_gp_param`, `app/plug-in/gimppluginmanager-call.c` `gimp_plug_in_manager_call_run`。
+
+#### ホスト → プラグインのメッセージシーケンス（-run モード）
+
+```
+host   → plugin: GP_CONFIG    (run モード開始)
+host   → plugin: GP_PROC_RUN  (フィルター呼び出し)
+```
+
+**重要**: プラグインは GP_CONFIG 受信後に何も送らずそのまま GP_PROC_RUN を待つ。GP_HAS_INIT は `-query` モードでのみ送られ、`-run` モードでは不要。(`libgimp/gimpplugin.c` `gimp_plug_in_loop` にて確認。)
+
+#### GP_PROC_RUN ペイロードフォーマット
+
+```
+string  proc_name
+uint32  n_params
+GPParam[n_params]
+```
+
+各 `GPParam` のフォーマット（`libgimpbase/gimpprotocol.c` `_gp_params_write`）:
+
+```
+uint32  param_type                (GPParamType enum)
+string  param->type_name          (outer: GValue の GType 名、g_type_name(type) の結果)
+<param_type 依存データ>
+```
+
+#### filter 呼び出し時の各パラメーター
+
+| param | param_type | outer type_name | データ |
+|---|---|---|---|
+| param[0]: run_mode | `GP_PARAM_TYPE_INT (=0)` | `"GimpRunMode"` | `int32 = 1` (GIMP_RUN_NONINTERACTIVE) |
+| param[1]: image_id | `GP_PARAM_TYPE_INT (=0)` | `"GimpImage"` | `int32 = <image_id>` |
+| param[2]: drawables | `GP_PARAM_TYPE_ID_ARRAY (=11)` | `"GimpCoreObjectArray"` | (下記参照) |
+
+**param[2] drawables の IdArray ペイロード** (`_gp_params_write` IdArray ブランチ):
+
+```
+string  d_id_array.type_name     = "GimpItem"
+        ※ GimpDrawable は GimpItem のサブタイプ。gimp_value_to_gp_param では
+           GIMP_IS_ITEM() チェックで element_type = GIMP_TYPE_ITEM が決まり、
+           g_type_name(GIMP_TYPE_ITEM) = "GimpItem" になる。"GimpDrawable" は誤り。
+uint32  d_id_array.size          = 要素数
+int32[] d_id_array.data[size]    = drawable ID 配列
+```
+
+**バグ注意**: GIMP 2.x ではドロアブルを単純な `GP_PARAM_TYPE_INT` で渡していた。GIMP 3 では `GP_PARAM_TYPE_ID_ARRAY` に変更されており、outer type_name も `"GimpObjectArray"` ではなく `"GimpCoreObjectArray"` が正しい。
+
 ---
 
 ## 9. Wire Protocol / PDB スタブ仕様（`src/host/`）

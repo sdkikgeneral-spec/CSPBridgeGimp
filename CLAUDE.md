@@ -109,6 +109,23 @@ class PluginSession
 - Platform branching via `host_machine.system()` for Windows vs Mac
 - See `docs/spec.md` for the full `meson.build` outline
 
+### ビルド・デプロイコマンド（Windows）
+
+```powershell
+# 初回セットアップ（または meson.build 変更後）
+meson setup build
+
+# ビルド
+meson compile -C build
+
+# デプロイ（CSP プラグインディレクトリへインストール＋ログクリア）
+meson install -C build
+```
+
+- ビルドディレクトリ: `build/`
+- MSVC 環境は PowerShell から実行すると自動アクティベートされる（Bash では cl.exe が見つからないため不可）
+- `meson install` 実行後、`cspbridge.log` / `cspbridge_stderr.log` は自動削除される
+
 ## Reference Documentation
 
 - GIMP 3.0 API Reference: `developer.gimp.org/resource/api/`

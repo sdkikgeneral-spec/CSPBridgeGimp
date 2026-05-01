@@ -178,6 +178,58 @@ SkipBytes(fd, n_samples     * 8);   // samples[] — doubles, 8 bytes each
 
 Double wire format: each double is 8 raw bytes, big-endian (byte-swapped on little-endian hosts). Confirmed in `libgimpbase/gimpwire.c` `_gimp_wire_read_double` / `_gimp_wire_write_double`.
 
+## GP_PROC_RUN wire format for filter call in -run mode (confirmed 2026-05-01)
+
+Source: `libgimpbase/gimpprotocol.c` `_gp_proc_run_write` + `_gp_params_write`, `libgimp/gimpgpparams-body.c` `gimp_value_to_gp_param`, `app/plug-in/gimppluginmanager-call.c` `gimp_plug_in_manager_call_run`.
+
+### Message sequence (-run mode)
+
+```
+host → plugin: GP_CONFIG    (run mode start)
+host → plugin: GP_PROC_RUN  (filter invocation)
+```
+
+The plugin sends **nothing** between GP_CONFIG and GP_PROC_RUN. It loops in `gimp_plug_in_loop` waiting for GP_PROC_RUN. `GP_HAS_INIT` is only sent during `-query` mode, never in `-run` mode. Source: `libgimp/gimpplugin.c` `gimp_plug_in_loop`.
+
+### GP_PROC_RUN payload
+
+```
+string  proc_name
+uint32  n_params
+GPParam[n_params]
+```
+
+Each `GPParam`:
+```
+uint32  param_type       (GPParamType enum)
+string  param->type_name (outer GType name — result of g_type_name(G_VALUE_TYPE(value)))
+<param_type-specific payload>
+```
+
+### Standard filter params (run_mode, image, drawables)
+
+| index | param_type | outer type_name | payload |
+|---|---|---|---|
+| [0] run_mode | `GP_PARAM_TYPE_INT (=0)` | `"GimpRunMode"` | `int32 = 1` (GIMP_RUN_NONINTERACTIVE) |
+| [1] image | `GP_PARAM_TYPE_INT (=0)` | `"GimpImage"` | `int32 = image_id` |
+| [2] drawables | `GP_PARAM_TYPE_ID_ARRAY (=11)` | `"GimpCoreObjectArray"` | see below |
+
+### GP_PARAM_TYPE_ID_ARRAY payload for drawables
+
+Source: `libgimpbase/gimpprotocol.c` `_gp_params_write` case `GP_PARAM_TYPE_ID_ARRAY`, `libgimp/gimpgpparams-body.c` `gimp_value_to_gp_param` GimpCoreObjectArray branch.
+
+```
+string  d_id_array.type_name = "GimpItem"
+        (NOT "GimpDrawable" — the element_type check is GIMP_IS_ITEM first,
+         so g_type_name(GIMP_TYPE_ITEM) = "GimpItem" is always used for drawables)
+uint32  d_id_array.size      (element count)
+int32[] d_id_array.data[size] (drawable IDs)
+```
+
+**Critical bug in earlier implementation**: Was sending `"GimpObjectArray"` as outer type_name and `"GimpDrawable"` as element type_name. Correct values are `"GimpCoreObjectArray"` and `"GimpItem"` respectively. This mismatch caused `gimp_plug_in_main_proc_run` → `_gimp_gp_params_to_value_array` to fail to reconstruct the GimpCoreObjectArray value, resulting in fatal error in the plugin.
+
+**GIMP 2 vs 3 delta**: In GIMP 2.x, drawables were passed as `GP_PARAM_TYPE_INT`. In GIMP 3 they became `GP_PARAM_TYPE_ID_ARRAY` (GimpCoreObjectArray). This is a breaking protocol change.
+
 ## Library usage
 
 | Library | Role | Notes |
