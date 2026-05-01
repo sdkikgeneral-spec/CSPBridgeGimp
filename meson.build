@@ -162,9 +162,10 @@ all_src_candidates = [
     'src/host/tile_transfer.cpp',
     'src/ipc/process.cpp',
     'src/ipc/wire_io.cpp',
-    'src/csp/plugin_entry.cpp',
     'src/csp/buffer.cpp',
 ]
+# plugin_entry.cpp は GIMP_PLUGIN_ID が DLL ごとに異なるため core_lib に含めず
+# 各 shared_library ターゲットで直接コンパイルする
 srcs = []
 foreach f : all_src_candidates
     if fs.exists(f)
@@ -202,30 +203,69 @@ else
     raw_ids = scan_result.stdout().strip()
     if raw_ids != ''
         plugin_ids = raw_ids.split('\n')
-        foreach plugin_id : plugin_ids
-            if plugin_id != ''
+        foreach entry : plugin_ids
+            if entry != ''
+                # entry は "id|exe_base|procedure" 形式
+                fields = entry.split('|')
+                plugin_id  = fields[0]   # 例: PlugInCheckerboard
+                exe_base   = fields[1]   # 例: checkerboard
+                procedure  = fields[2]   # 例: plug-in-checkerboard
                 if is_msvc
-                    plugin_macro_arg = '/DGIMP_PLUGIN_ID=\"' + plugin_id + '\"'
+                    macro_id   = '/DGIMP_PLUGIN_ID="'   + plugin_id + '"'
+                    macro_exe  = '/DGIMP_PLUGIN_EXE="'  + exe_base  + '"'
+                    macro_proc = '/DGIMP_PLUGIN_PROC="'  + procedure + '"'
                 else
-                    plugin_macro_arg = '-DGIMP_PLUGIN_ID="' + plugin_id + '"'
+                    macro_id   = '-DGIMP_PLUGIN_ID="'   + plugin_id + '"'
+                    macro_exe  = '-DGIMP_PLUGIN_EXE="'  + exe_base  + '"'
+                    macro_proc = '-DGIMP_PLUGIN_PROC="'  + procedure + '"'
                 endif
                 lib = shared_library(
                     'CSPBridgeGimp_' + plugin_id,
-                    [],
-                    cpp_args:     [plugin_macro_arg],
+                    files('src/csp/plugin_entry.cpp'),
+                    cpp_args:     [macro_id, macro_exe, macro_proc],
                     dependencies: common_deps,
                     link_with:    core_lib,
+                    include_directories: include_directories('extern/TriglavPlugInSDK'),
+                    # CSP プラグインは .cpm 拡張子を要求する（.dll は認識されない）
+                    name_suffix:  'cpm',
                     install:      true,
                     install_dir:  csp_output_dir,
                 )
                 bridge_libs += lib
             endif
         endforeach
+
+        # bridge_config.json を CSP プラグインディレクトリの config/ サブディレクトリに配置
+        install_data(
+            'config/bridge_config.json',
+            install_dir: csp_output_dir / 'config',
+        )
     else
         warning('plugins.json にエントリがありません。' +
                 'tools/scanner/scan_and_select.py でプラグインを選択してください。')
     endif
 endif
+
+# ----------------------------------------------------------------------------
+# 診断ツール（インストール不要、ローカルデバッグ用）
+# ----------------------------------------------------------------------------
+if fs.exists('tools/test_checkerboard.cpp')
+    executable('test_checkerboard',
+        files('tools/test_checkerboard.cpp'),
+        dependencies:        common_deps,
+        link_with:           core_lib,
+        include_directories: include_directories('src'),
+    )
+endif
+
+# ----------------------------------------------------------------------------
+# インストール後にログをクリア（前回実行ログが混入しないよう ninja install 後に自動削除）
+# ----------------------------------------------------------------------------
+meson.add_install_script(
+    py, '-c',
+    'import os,sys;[os.remove(p) for f in ["cspbridge.log","cspbridge_stderr.log"] for p in [os.path.join(sys.argv[1],f)] if os.path.exists(p)]',
+    csp_output_dir,
+)
 
 # ----------------------------------------------------------------------------
 # テスト（実装済みのテストファイルのみ順次追加）
