@@ -23,6 +23,7 @@
 #include "process.h"
 
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -210,7 +211,8 @@ static PluginProcess SpawnPluginWindows(
     const std::string& exePath,
     const std::string& gimpLibDir,
     PluginMode mode,
-    int protocolVersion)
+    int protocolVersion,
+    const std::string& stderrLogPath)
 {
     // ------------------------------------------------------------------
     // 1. パイプ作成（binary mode）
@@ -335,17 +337,41 @@ static PluginProcess SpawnPluginWindows(
     si.hStdInput   = INVALID_HANDLE_VALUE;
     si.hStdOutput  = INVALID_HANDLE_VALUE;
 
-    // 親の stderr を継承させて GLib 警告を親コンソールに流す
-    const HANDLE hStdErr = GetStdHandle(STD_ERROR_HANDLE);
-    if (hStdErr != INVALID_HANDLE_VALUE && hStdErr != nullptr)
+    // stderr: ログパス指定があればファイルに、なければ親の stderr を継承
+    HANDLE hStdErr = INVALID_HANDLE_VALUE;
+    bool   ownStderrHandle = false; // CreateProcessW 後に CloseHandle が必要か
+    if (!stderrLogPath.empty())
     {
-        SetHandleInformation(hStdErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-        si.hStdError = hStdErr;
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength        = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        const std::filesystem::path logPath(stderrLogPath);
+        hStdErr = CreateFileW(
+            logPath.wstring().c_str(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ,
+            &sa,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (hStdErr != INVALID_HANDLE_VALUE)
+        {
+            ownStderrHandle = true;
+        }
     }
     else
     {
-        si.hStdError = INVALID_HANDLE_VALUE;
+        hStdErr = GetStdHandle(STD_ERROR_HANDLE);
+        if (hStdErr != INVALID_HANDLE_VALUE && hStdErr != nullptr)
+        {
+            SetHandleInformation(hStdErr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        }
+        else
+        {
+            hStdErr = INVALID_HANDLE_VALUE;
+        }
     }
+    si.hStdError = hStdErr;
 
     // ------------------------------------------------------------------
     // 7. CreateProcessW 呼び出し
@@ -370,8 +396,15 @@ static PluginProcess SpawnPluginWindows(
         _close(pluginWriteFd);
         _close(pluginReadFd);
         _close(parentWriteFd);
+        if (ownStderrHandle)
+            CloseHandle(hStdErr);
         throw MakeWin32Error("CreateProcessW", err);
     }
+
+    // 自分で開いた stderr ファイルハンドルは CreateProcessW が子に継承済み
+    // なので親側は解放する
+    if (ownStderrHandle)
+        CloseHandle(hStdErr);
 
     // ------------------------------------------------------------------
     // 8. 子側 fd を親プロセスで閉じる
@@ -700,10 +733,11 @@ PluginProcess SpawnPlugin(
     const std::string& exePath,
     const std::string& gimpLibDir,
     PluginMode mode,
-    int protocolVersion)
+    int protocolVersion,
+    const std::string& stderrLogPath)
 {
 #ifdef _WIN32
-    return SpawnPluginWindows(exePath, gimpLibDir, mode, protocolVersion);
+    return SpawnPluginWindows(exePath, gimpLibDir, mode, protocolVersion, stderrLogPath);
 #else
     return SpawnPluginPosix(exePath, gimpLibDir, mode, protocolVersion);
 #endif

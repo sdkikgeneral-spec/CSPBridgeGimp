@@ -359,8 +359,9 @@ public:
     explicit PluginSession(
         const std::string& exePath,
         const std::string& gimpLibDir,
-        PluginMode         mode        = PluginMode::Run,
-        HostContext*       hostContext = nullptr);
+        PluginMode         mode          = PluginMode::Run,
+        HostContext*       hostContext   = nullptr,
+        const std::string& stderrLogPath = "");
 
     /**
      * @brief  クエリフェーズ完了を待つ Future を返す（Query モード専用）

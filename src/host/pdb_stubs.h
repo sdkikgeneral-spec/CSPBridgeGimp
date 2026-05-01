@@ -15,7 +15,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <shared_mutex>
+#include <string>
 #include <vector>
 
 #include "../ipc/wire_io.h"
@@ -63,6 +65,15 @@ public:
      */
     void Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const;
 
+    /**
+     * @brief  デバッグログコールバックを設定する
+     * @param  fn  ログ出力関数（nullptr で無効化）
+     */
+    void SetLogCallback(std::function<void(const char*)> fn);
+
+    /** @brief  ログコールバックにメッセージを送る（wire_io 等の外部モジュールから使用） */
+    void Log(const char* msg) const;
+
     /** @brief 幅 (px) を返す */
     uint32_t Width()  const;
     /** @brief 高さ (px) を返す */
@@ -94,8 +105,9 @@ public:
     std::shared_mutex& Mutex() const;
 
 private:
-    mutable std::shared_mutex m_mutex;
-    uint32_t                  m_width;
-    uint32_t                  m_height;
-    std::vector<uint8_t>      m_rgbaBuffer; ///< width * height * 4 バイト、ゼロ初期化
+    mutable std::shared_mutex           m_mutex;
+    uint32_t                            m_width;
+    uint32_t                            m_height;
+    std::vector<uint8_t>                m_rgbaBuffer; ///< width * height * 4 バイト、ゼロ初期化
+    std::function<void(const char*)>    m_logFn;
 };

@@ -165,7 +165,14 @@ std::string FindPluginExe(const BridgeConfig& cfg, const std::string& pluginName
 
     for (const auto& searchDir : cfg.pluginSearchPaths)
     {
+        // フラットレイアウト: searchDir/name.exe（旧 GIMP 2 形式）
         std::filesystem::path candidate = std::filesystem::path(searchDir) / exeName;
+        if (std::filesystem::exists(candidate))
+        {
+            return candidate.string();
+        }
+        // サブディレクトリレイアウト: searchDir/name/name.exe（GIMP 3 形式）
+        candidate = std::filesystem::path(searchDir) / pluginName / exeName;
         if (std::filesystem::exists(candidate))
         {
             return candidate.string();

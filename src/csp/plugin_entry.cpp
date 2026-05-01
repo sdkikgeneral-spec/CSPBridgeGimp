@@ -2,47 +2,29 @@
  * @file   plugin_entry.cpp
  * @brief  CSP フィルタープラグイン エントリポイント実装
  *
- * TriglavPluginCall を実装し、セレクターに従って
- * モジュール初期化 / フィルター初期化 / フィルター実行 を処理する。
- *
- * マルチプラグイン DLL アーキテクチャ（spec.md §4）:
- *   ビルド時に -DGIMP_PLUGIN_ID="plug-in-gauss" 等が定義され、
- *   1 つのソースツリーから複数の CSPBridgeGimp_<Id>.dll を生成する。
- *   実行時は config/bridge_config.json で EXE パスを解決する。
- *
- * 実行フロー（HandleFilterRun、spec.md §11）:
- *   1. CSP offscreen から選択矩形内ピクセルを読み込む  (buffer.cpp)
- *   2. RGBA に変換                                    (buffer.cpp)
- *   3. HostContext に書き込む                         (pdb_stubs.cpp)
- *   4. PluginSession を生成して GIMP プラグインを起動  (wire_io.cpp)
- *   5. RunFilter().get() で完了待機
- *   6. HostContext から RGBA を読み出して CSP に書き戻す (buffer.cpp)
- *   7. updateDestinationOffscreenRectProc で書き戻し完了通知
+ * PIHSVMain.cpp（CELSYS 公式サンプル）の構造に忠実に従い実装する。
+ * 差異が生じると CSP がフィルターをグレーアウトするため、
+ * SDK の呼び出し順序・result 管理・PropertyCallBack の有無を正確に一致させる。
  *
  * @author CSPBridgeGimp
- * @date   2026-04-29
+ * @date   2026-04-30
  */
 
 // ---------------------------------------------------------------------------
 // GIMP_PLUGIN_ID フォールバック
-//
-// core_lib（静的ライブラリ）として plugin_entry.cpp をビルドする際には
-// GIMP_PLUGIN_ID が定義されていない。
-// その場合は空文字列のフォールバックを使用し、実行時に HandleFilterRun 内で
-// runtime_error を投げることで安全に失敗する。
-// 実際に使用される CSPBridgeGimp_<Id>.dll は meson.build から
-// -DGIMP_PLUGIN_ID="<id>" が渡されるため、このフォールバックは使用されない。
 // ---------------------------------------------------------------------------
 #ifndef GIMP_PLUGIN_ID
 #define GIMP_PLUGIN_ID ""
 #endif
+#ifndef GIMP_PLUGIN_EXE
+#define GIMP_PLUGIN_EXE ""
+#endif
+#ifndef GIMP_PLUGIN_PROC
+#define GIMP_PLUGIN_PROC ""
+#endif
 
 // ---------------------------------------------------------------------------
 // プラットフォームヘッダー
-//
-// WIN32_LEAN_AND_MEAN / NOMINMAX は meson.build が /D で設定済みのため
-// #ifndef ガードで二重定義を防ぐ。
-// TriglavPlugInSDK は _WINDOWS を参照するため、_WIN32 ベースで補完する。
 // ---------------------------------------------------------------------------
 #ifdef _WIN32
 #ifndef _WINDOWS
@@ -62,6 +44,7 @@
 // ---------------------------------------------------------------------------
 // 標準ライブラリ
 // ---------------------------------------------------------------------------
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -77,12 +60,12 @@
 
 // ---------------------------------------------------------------------------
 // プロジェクト内モジュール
-// src/csp/ からの相対パスで参照する（core_lib には include_directories('src') がない）
 // ---------------------------------------------------------------------------
 #include "plugin_entry.h"
 #include "buffer.h"
 #include "../config/config.h"
 #include "../host/pdb_stubs.h"
+#include "../host/tile_transfer.h"
 #include "../ipc/wire_io.h"
 
 // ---------------------------------------------------------------------------
@@ -99,15 +82,43 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID /*reserved*/)
     if (reason == DLL_PROCESS_ATTACH)
     {
         g_hModule = hModule;
-        // スレッドごとの DLL_THREAD_ATTACH / DLL_THREAD_DETACH 通知は不要
         DisableThreadLibraryCalls(hModule);
     }
     return TRUE;
 }
-#else
-// Mac: __attribute__((constructor)) は不要。
-// dladdr を使うため TriglavPluginCall のアドレスを直接渡す。
 #endif
+
+// ===========================================================================
+// DbgLog — C:\Temp\cspbridge.log にデバッグ情報を追記
+// ===========================================================================
+namespace
+{
+void DbgLog(const char* msg)
+{
+#ifdef _WIN32
+    // .cpm と同じディレクトリに cspbridge.log を書く
+    char path[MAX_PATH] = {};
+    if (g_hModule)
+    {
+        wchar_t wpath[MAX_PATH] = {};
+        ::GetModuleFileNameW(g_hModule, wpath, MAX_PATH);
+        // wchar → char 変換（ASCII パス前提）
+        ::WideCharToMultiByte(CP_ACP, 0, wpath, -1, path, MAX_PATH, nullptr, nullptr);
+        // ファイル名部分を "cspbridge.log" に置き換える
+        char* lastSep = std::strrchr(path, '\\');
+        if (lastSep) std::strcpy(lastSep + 1, "cspbridge.log");
+    }
+    FILE* f = path[0] ? std::fopen(path, "a") : nullptr;
+#else
+    FILE* f = std::fopen("/tmp/cspbridge.log", "a");
+#endif
+    if (f)
+    {
+        std::fputs(msg, f);
+        std::fclose(f);
+    }
+}
+} // anonymous namespace
 
 // ===========================================================================
 // GetModuleDir
@@ -118,7 +129,7 @@ std::string GetModuleDir()
 #ifdef _WIN32
     if (!g_hModule)
     {
-        throw std::runtime_error("GetModuleDir: g_hModule is null (DllMain not called?)");
+        throw std::runtime_error("GetModuleDir: g_hModule is null");
     }
     wchar_t buf[MAX_PATH] = {};
     DWORD len = ::GetModuleFileNameW(g_hModule, buf, MAX_PATH);
@@ -130,7 +141,6 @@ std::string GetModuleDir()
     return dllPath.parent_path().string();
 #else
     ::Dl_info info{};
-    // TriglavPluginCall のアドレスを使って自分自身の dylib パスを取得
     if (::dladdr(reinterpret_cast<void*>(&TriglavPluginCall), &info) == 0 || !info.dli_fname)
     {
         throw std::runtime_error("GetModuleDir: dladdr failed");
@@ -141,395 +151,440 @@ std::string GetModuleDir()
 }
 
 // ===========================================================================
-// 内部ヘルパー — 文字列オブジェクト RAII ラッパー
+// BridgeData — ModuleInitialize で確保し、セレクター間で共有する状態
 // ===========================================================================
-namespace
+
+struct BridgeData
 {
-
-/**
- * @brief TriglavPlugInStringObject を RAII で管理するヘルパー
- *
- * コンストラクターで createWithAsciiStringProc を呼び、
- * デストラクターで releaseProc を呼ぶ。
- * 使用後の手動 release 忘れを防ぐ。
- */
-class ScopedTriglavString
-{
-public:
-    ScopedTriglavString(
-        TriglavPlugInStringService* strSvc,
-        const char*                 ascii)
-        : m_strSvc(strSvc)
-        , m_obj(nullptr)
-    {
-        int len = static_cast<int>(std::strlen(ascii));
-        if (strSvc->createWithAsciiStringProc(&m_obj, ascii, len)
-            != kTriglavPlugInAPIResultSuccess)
-        {
-            throw std::runtime_error(
-                std::string("ScopedTriglavString: createWithAsciiStringProc failed for: ") + ascii);
-        }
-    }
-
-    ~ScopedTriglavString()
-    {
-        if (m_obj && m_strSvc)
-        {
-            m_strSvc->releaseProc(m_obj);
-        }
-    }
-
-    TriglavPlugInStringObject Get() const { return m_obj; }
-
-    ScopedTriglavString(const ScopedTriglavString&)            = delete;
-    ScopedTriglavString& operator=(const ScopedTriglavString&) = delete;
-
-private:
-    TriglavPlugInStringService* m_strSvc;
-    TriglavPlugInStringObject   m_obj;
+    TriglavPlugInPropertyService* pPropertyService = nullptr;
 };
 
-// ---------------------------------------------------------------------------
-// セレクター処理関数の前方宣言
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// FilterPropertyCallBack — CSP がプロパティ変更を通知するコールバック
+//
+// サンプル（PIHSVMain.cpp）に倣い実関数を登録する。nullptr を渡すと
+// CSP がフィルターを有効化しない可能性がある。
+// PoC では値変更を検知するだけで再適用はしないため NoModify を返す。
+// ===========================================================================
 
-void HandleModuleInitialize(
-    TriglavPlugInInt*   result,
-    TriglavPlugInServer* pluginServer);
-
-void HandleFilterInitialize(
-    TriglavPlugInInt*   result,
-    TriglavPlugInServer* pluginServer);
-
-void HandleFilterRun(
-    TriglavPlugInInt*   result,
-    TriglavPlugInServer* pluginServer);
-
-} // anonymous namespace
+static void TRIGLAV_PLUGIN_CALLBACK FilterPropertyCallBack(
+    TriglavPlugInInt*           result,
+    TriglavPlugInPropertyObject /*propertyObject*/,
+    const TriglavPlugInInt      /*itemKey*/,
+    const TriglavPlugInInt      /*notify*/,
+    TriglavPlugInPtr            /*data*/)
+{
+    *result = kTriglavPlugInPropertyCallBackResultNoModify;
+}
 
 // ===========================================================================
 // TriglavPluginCall — エントリポイント
+//
+// サンプルに忠実に:
+//   - 先頭で *result = kTriglavPlugInCallResultFailed をセット
+//   - 各セレクターの成功パスの末尾でのみ Success をセット
+//   - pluginServer が NULL なら即座にリターン
 // ===========================================================================
 
-/**
- * @brief  CSP が呼び出す唯一のエクスポート関数
- *
- * セレクター値に応じて各 Handle* 関数に委譲する。
- * std::exception をキャッチした場合は *result = kTriglavPlugInCallResultFailed を設定する。
- *
- * @param result        呼び出し結果（成功: kTriglavPlugInCallResultSuccess = 0）
- * @param data          プラグイン独自データポインタ（PoC では未使用）
- * @param selector      処理種別（kTriglavPlugInSelectorModuleInitialize 等）
- * @param pluginServer  SDK が提供するサーバーオブジェクト
- * @param reserved      予約（使用禁止）
- */
 extern "C"
 TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
-    TriglavPlugInInt*   result,
-    TriglavPlugInPtr*   /*data*/,
-    const TriglavPlugInInt selector,
-    TriglavPlugInServer* pluginServer,
-    TriglavPlugInPtr    /*reserved*/)
+    TriglavPlugInInt*        result,
+    TriglavPlugInPtr*        data,
+    const TriglavPlugInInt   selector,
+    TriglavPlugInServer*     pluginServer,
+    TriglavPlugInPtr         /*reserved*/)
 {
-    *result = kTriglavPlugInCallResultSuccess;
+    *result = kTriglavPlugInCallResultFailed;   // サンプルと同じ初期値
 
-    try
     {
-        switch (selector)
+        char dbgBuf[64];
+        std::snprintf(dbgBuf, sizeof(dbgBuf),
+            "CSPBridge: TriglavPluginCall selector=0x%04X\n",
+            static_cast<unsigned>(selector));
+        DbgLog(dbgBuf);
+    }
+
+    if (pluginServer == nullptr)
+    {
+        DbgLog("CSPBridge: pluginServer is NULL\n");
+        return;
+    }
+
+    TriglavPlugInHostObject  hostObject  = pluginServer->hostObject;
+    TriglavPlugInRecordSuite& recSuite   = pluginServer->recordSuite;
+
+    // -----------------------------------------------------------------------
+    // kTriglavPlugInSelectorModuleInitialize
+    // -----------------------------------------------------------------------
+    if (selector == kTriglavPlugInSelectorModuleInitialize)
+    {
+        DbgLog("CSPBridge: ModuleInitialize called\n");
+
+        TriglavPlugInModuleInitializeRecord* moduleRec =
+            recSuite.moduleInitializeRecord;
+        TriglavPlugInStringService* strSvc =
+            pluginServer->serviceSuite.stringService;
+
+        if (moduleRec != nullptr && strSvc != nullptr)
         {
-        case kTriglavPlugInSelectorModuleInitialize:
-            HandleModuleInitialize(result, pluginServer);
-            break;
+            TriglavPlugInInt hostVersion = 0;
+            moduleRec->getHostVersionProc(&hostVersion, hostObject);
 
-        case kTriglavPlugInSelectorFilterInitialize:
-            HandleFilterInitialize(result, pluginServer);
-            break;
+            char dbgBuf[128];
+            std::snprintf(dbgBuf, sizeof(dbgBuf),
+                "CSPBridge: hostVersion=%d needVersion=%d\n",
+                static_cast<int>(hostVersion),
+                static_cast<int>(kTriglavPlugInNeedHostVersion));
+            DbgLog(dbgBuf);
 
-        case kTriglavPlugInSelectorFilterRun:
-            HandleFilterRun(result, pluginServer);
-            break;
+            if (hostVersion >= kTriglavPlugInNeedHostVersion)
+            {
+                const std::string moduleIdStr =
+                    std::string("com.cspbridgegimp.") + GIMP_PLUGIN_ID;
+                TriglavPlugInStringObject moduleIdObj = nullptr;
+                strSvc->createWithAsciiStringProc(
+                    &moduleIdObj,
+                    moduleIdStr.c_str(),
+                    static_cast<TriglavPlugInInt>(moduleIdStr.size()));
 
-        case kTriglavPlugInSelectorFilterTerminate:
-            // no-op (PoC)
-            break;
+                moduleRec->setModuleIDProc(hostObject, moduleIdObj);
+                moduleRec->setModuleKindProc(
+                    hostObject, kTriglavPlugInModuleSwitchKindFilter);
 
-        case kTriglavPlugInSelectorModuleTerminate:
-            // no-op (PoC)
-            break;
+                strSvc->releaseProc(moduleIdObj);
 
-        default:
-            // 未知のセレクターは無視して Success を返す
-            break;
+                // セレクター間で状態を共有する BridgeData を確保
+                BridgeData* bd = new BridgeData;
+                *data  = bd;
+                *result = kTriglavPlugInCallResultSuccess;
+                DbgLog("CSPBridge: ModuleInitialize SUCCESS\n");
+            }
+            else
+            {
+                DbgLog("CSPBridge: ModuleInitialize FAILED (hostVersion too low)\n");
+            }
+        }
+        else
+        {
+            DbgLog("CSPBridge: ModuleInitialize FAILED (moduleRec or strSvc null)\n");
         }
     }
-    catch (const std::exception&)
+
+    // -----------------------------------------------------------------------
+    // kTriglavPlugInSelectorModuleTerminate
+    // -----------------------------------------------------------------------
+    else if (selector == kTriglavPlugInSelectorModuleTerminate)
     {
-        *result = kTriglavPlugInCallResultFailed;
+        BridgeData* bd = static_cast<BridgeData*>(*data);
+        delete bd;
+        *data   = nullptr;
+        *result = kTriglavPlugInCallResultSuccess;
     }
-    catch (...)
+
+    // -----------------------------------------------------------------------
+    // kTriglavPlugInSelectorFilterInitialize
+    //
+    // サンプルに忠実に:
+    //   - 各 setXxx の戻り値は個別チェックしない（サンプルも同様）
+    //   - if-block の末尾で Success をセット
+    //   - PropertyCallBack には実関数を渡す
+    // -----------------------------------------------------------------------
+    else if (selector == kTriglavPlugInSelectorFilterInitialize)
     {
-        *result = kTriglavPlugInCallResultFailed;
+        DbgLog("CSPBridge: FilterInitialize called\n");
+
+        TriglavPlugInStringService*   strSvc  = pluginServer->serviceSuite.stringService;
+        TriglavPlugInPropertyService* propSvc = pluginServer->serviceSuite.propertyService;
+        TriglavPlugInFilterInitializeRecord* fiRec = TriglavPlugInGetFilterInitializeRecord(&recSuite);
+
+        {
+            char dbgBuf[256];
+            std::snprintf(dbgBuf, sizeof(dbgBuf),
+                "CSPBridge: FilterInitialize fiRec=%p strSvc=%p propSvc=%p\n",
+                static_cast<void*>(fiRec),
+                static_cast<void*>(strSvc),
+                static_cast<void*>(propSvc));
+            DbgLog(dbgBuf);
+        }
+
+        if (fiRec != nullptr
+            && strSvc  != nullptr
+            && propSvc != nullptr)
+        {
+            BridgeData* bd = static_cast<BridgeData*>(*data);
+            if (bd != nullptr)
+            {
+                bd->pPropertyService = propSvc;
+            }
+
+            // カテゴリ名
+            TriglavPlugInStringObject catNameObj = nullptr;
+            strSvc->createWithAsciiStringProc(
+                &catNameObj, "GIMP Bridge",
+                static_cast<TriglavPlugInInt>(std::strlen("GIMP Bridge")));
+            TriglavPlugInFilterInitializeSetFilterCategoryName(
+                &recSuite, hostObject, catNameObj, '\0');
+            strSvc->releaseProc(catNameObj);
+
+            // フィルター名（GIMP_PLUGIN_ID）
+            TriglavPlugInStringObject filterNameObj = nullptr;
+            strSvc->createWithAsciiStringProc(
+                &filterNameObj, GIMP_PLUGIN_ID,
+                static_cast<TriglavPlugInInt>(std::strlen(GIMP_PLUGIN_ID)));
+            TriglavPlugInFilterInitializeSetFilterName(
+                &recSuite, hostObject, filterNameObj, '\0');
+            strSvc->releaseProc(filterNameObj);
+
+            // プレビュー
+            TriglavPlugInFilterInitializeSetCanPreview(
+                &recSuite, hostObject, kTriglavPlugInBoolFalse);
+
+            // buffer.cpp がサポートするレイヤー種別のみ（RGBAlpha / GrayAlpha）
+            TriglavPlugInInt targets[] = {
+                kTriglavPlugInFilterTargetKindRasterLayerRGBAlpha,
+                kTriglavPlugInFilterTargetKindRasterLayerGrayAlpha,
+            };
+            TriglavPlugInFilterInitializeSetTargetKinds(
+                &recSuite, hostObject, targets,
+                static_cast<TriglavPlugInInt>(std::size(targets)));
+
+            // プロパティ作成（check-size パラメーター）
+            TriglavPlugInPropertyObject propObj = nullptr;
+            propSvc->createProc(&propObj);
+
+            if (propObj != nullptr)
+            {
+                TriglavPlugInStringObject labelObj = nullptr;
+                strSvc->createWithAsciiStringProc(
+                    &labelObj, "Check Size",
+                    static_cast<TriglavPlugInInt>(std::strlen("Check Size")));
+                propSvc->addItemProc(
+                    propObj, 1,
+                    kTriglavPlugInPropertyValueTypeInteger,
+                    kTriglavPlugInPropertyValueKindDefault,
+                    kTriglavPlugInPropertyInputKindDefault,
+                    labelObj, '\0');
+                strSvc->releaseProc(labelObj);
+
+                propSvc->setIntegerValueProc(propObj,        1, 10);
+                propSvc->setIntegerDefaultValueProc(propObj, 1, 10);
+                propSvc->setIntegerMinValueProc(propObj,     1, 1);
+                propSvc->setIntegerMaxValueProc(propObj,     1, 200);
+
+                TriglavPlugInFilterInitializeSetProperty(
+                    &recSuite, hostObject, propObj);
+
+                // 実関数ポインターを登録（nullptr は不可）
+                TriglavPlugInFilterInitializeSetPropertyCallBack(
+                    &recSuite, hostObject,
+                    FilterPropertyCallBack, *data);
+
+                propSvc->releaseProc(propObj);
+            }
+
+            *result = kTriglavPlugInCallResultSuccess;   // 末尾でのみ Success
+            DbgLog("CSPBridge: FilterInitialize SUCCESS\n");
+        }
+        else
+        {
+            DbgLog("CSPBridge: FilterInitialize FAILED (null check)\n");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // kTriglavPlugInSelectorFilterTerminate
+    // -----------------------------------------------------------------------
+    else if (selector == kTriglavPlugInSelectorFilterTerminate)
+    {
+        *result = kTriglavPlugInCallResultSuccess;
+    }
+
+    // -----------------------------------------------------------------------
+    // kTriglavPlugInSelectorFilterRun
+    // -----------------------------------------------------------------------
+    else if (selector == kTriglavPlugInSelectorFilterRun)
+    {
+        DbgLog("CSPBridge: FilterRun called\n");
+        TriglavPlugInOffscreenService* offSvc = pluginServer->serviceSuite.offscreenService;
+
+        if (TriglavPlugInGetFilterRunRecord(&recSuite) != nullptr
+            && offSvc != nullptr)
+        {
+            try
+            {
+                // Step 0: CSP にフィルター実行開始を通知
+                DbgLog("CSPBridge: FilterRun Step0 ProcessStart\n");
+                TriglavPlugInInt processResult = 0;
+                TriglavPlugInFilterRunProcess(
+                    &recSuite, &processResult,
+                    hostObject, kTriglavPlugInFilterRunProcessStateStart);
+
+                {
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf),
+                        "CSPBridge: FilterRun processResult=0x%X\n",
+                        static_cast<unsigned>(processResult));
+                    DbgLog(buf);
+                }
+
+                if (processResult == kTriglavPlugInFilterRunProcessResultExit)
+                {
+                    DbgLog("CSPBridge: FilterRun Exit from Start\n");
+                    *result = kTriglavPlugInCallResultSuccess;
+                    return;
+                }
+
+                // Step 1: offscreen / selectRect 取得
+                DbgLog("CSPBridge: FilterRun Step1 GetOffscreens\n");
+                TriglavPlugInOffscreenObject srcOffscreen = nullptr;
+                TriglavPlugInFilterRunGetSourceOffscreen(
+                    &recSuite, &srcOffscreen, hostObject);
+
+                TriglavPlugInOffscreenObject dstOffscreen = nullptr;
+                TriglavPlugInFilterRunGetDestinationOffscreen(
+                    &recSuite, &dstOffscreen, hostObject);
+
+                TriglavPlugInRect selectRect{};
+                TriglavPlugInFilterRunGetSelectAreaRect(
+                    &recSuite, &selectRect, hostObject);
+
+                {
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf),
+                        "CSPBridge: FilterRun src=%p dst=%p rect=(%d,%d,%d,%d)\n",
+                        static_cast<void*>(srcOffscreen),
+                        static_cast<void*>(dstOffscreen),
+                        selectRect.left, selectRect.top,
+                        selectRect.right, selectRect.bottom);
+                    DbgLog(buf);
+                }
+
+                // Step 2: CSP バッファ → RGBA 変換
+                DbgLog("CSPBridge: FilterRun Step2 ReadFromOffscreen\n");
+                CspBridge::CspBuffer cspBuf =
+                    CspBridge::ReadFromOffscreen(offSvc, srcOffscreen, selectRect);
+                DbgLog("CSPBridge: FilterRun Step2 CspToRgba\n");
+                std::vector<uint8_t> rgba = CspBridge::CspToRgba(cspBuf);
+
+                // Step 3: HostContext に RGBA データをコピー
+                DbgLog("CSPBridge: FilterRun Step3 HostContext\n");
+                HostContext ctx(cspBuf.width, cspBuf.height);
+                ctx.SetLogCallback(DbgLog);
+                {
+                    std::unique_lock lock(ctx.Mutex());
+                    std::memcpy(ctx.RgbaData(), rgba.data(), rgba.size());
+                }
+                {
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf),
+                        "CSPBridge: FilterRun rgba_before[0..3]=%02X %02X %02X %02X\n",
+                        rgba[0], rgba[1], rgba[2], rgba[3]);
+                    DbgLog(buf);
+                }
+
+                // Step 4: bridge_config.json → プラグイン EXE パスを解決
+                DbgLog("CSPBridge: FilterRun Step4 LoadConfig\n");
+                const std::string moduleDir  = GetModuleDir();
+                const std::string configPath = moduleDir + "/config/bridge_config.json";
+                const BridgeConfig cfg       = LoadConfig(configPath);
+
+                const std::string exePath = FindPluginExe(cfg, GIMP_PLUGIN_EXE);
+                {
+                    char buf[512];
+                    std::snprintf(buf, sizeof(buf),
+                        "CSPBridge: FilterRun exePath='%s'\n", exePath.c_str());
+                    DbgLog(buf);
+                }
+
+                if (exePath.empty())
+                {
+                    DbgLog("CSPBridge: FilterRun EXE not found -> Abort\n");
+                    TriglavPlugInFilterRunProcess(
+                        &recSuite, &processResult,
+                        hostObject, kTriglavPlugInFilterRunProcessStateAbort);
+                    return;
+                }
+
+                // Step 5: PluginSession を生成してフィルターを実行
+                DbgLog("CSPBridge: FilterRun Step5 PluginSession\n");
+                {
+                    FilterParams params;
+                    params.procedureName = GIMP_PLUGIN_PROC;
+                    // checkerboard: psychobilly=0, check-size=10
+                    // (GIMP_RUN_NONINTERACTIVE requires all args; run-mode/image/drawables
+                    //  are sent by WorkerRunLoop; these are the filter-specific params)
+                    params.args = {
+                        GpParam{GpParamType::Int, "", 0,  0.0},  // psychobilly
+                        GpParam{GpParamType::Int, "", 10, 0.0},  // check-size
+                    };
+
+                    g_tileGetCount = 0;
+                    g_tilePutCount = 0;
+                    const std::string stderrLog = moduleDir + "/cspbridge_stderr.log";
+                    PluginSession session(exePath, cfg.gimpLibDir, PluginMode::Run, &ctx, stderrLog);
+                    DbgLog("CSPBridge: FilterRun Step5 RunFilter\n");
+                    session.RunFilter(params).get();
+                    DbgLog("CSPBridge: FilterRun Step5 RunFilter done\n");
+                    {
+                        char buf[128];
+                        std::snprintf(buf, sizeof(buf),
+                            "CSPBridge: FilterRun TileGET=%d TilePUT=%d\n",
+                            g_tileGetCount.load(), g_tilePutCount.load());
+                        DbgLog(buf);
+                    }
+                }
+
+                // Step 6: 処理済み RGBA を読み出す
+                DbgLog("CSPBridge: FilterRun Step6 ReadResult\n");
+                {
+                    std::shared_lock lock(ctx.Mutex());
+                    const uint8_t* ptr = ctx.RgbaData();
+                    rgba.assign(ptr,
+                        ptr + static_cast<ptrdiff_t>(cspBuf.width) * cspBuf.height * 4);
+                }
+                {
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf),
+                        "CSPBridge: FilterRun rgba_after[0..3]=%02X %02X %02X %02X\n",
+                        rgba[0], rgba[1], rgba[2], rgba[3]);
+                    DbgLog(buf);
+                }
+
+                // Step 7: RGBA → CSP バッファ形式に変換して書き戻す
+                DbgLog("CSPBridge: FilterRun Step7 WriteToOffscreen\n");
+                CspBridge::CspBuffer resultBuf =
+                    CspBridge::RgbaToCsp(rgba.data(), cspBuf.width, cspBuf.height, cspBuf);
+                CspBridge::WriteToOffscreen(offSvc, dstOffscreen, selectRect, resultBuf);
+
+                // Step 8: 書き戻し完了を CSP に通知
+                DbgLog("CSPBridge: FilterRun Step8 UpdateRect\n");
+                TriglavPlugInFilterRunUpdateDestinationOffscreenRect(
+                    &recSuite, hostObject, &selectRect);
+
+                // Step 9: フィルター実行終了を通知
+                DbgLog("CSPBridge: FilterRun Step9 ProcessEnd\n");
+                TriglavPlugInFilterRunProcess(
+                    &recSuite, &processResult,
+                    hostObject, kTriglavPlugInFilterRunProcessStateEnd);
+
+                *result = kTriglavPlugInCallResultSuccess;
+                DbgLog("CSPBridge: FilterRun SUCCESS\n");
+            }
+            catch (const std::exception& ex)
+            {
+                char buf[512];
+                std::snprintf(buf, sizeof(buf),
+                    "CSPBridge: FilterRun EXCEPTION: %s\n", ex.what());
+                DbgLog(buf);
+            }
+            catch (...)
+            {
+                DbgLog("CSPBridge: FilterRun UNKNOWN EXCEPTION\n");
+            }
+        }
+        else
+        {
+            DbgLog("CSPBridge: FilterRun runRec or offSvc is null\n");
+        }
     }
 }
-
-// ===========================================================================
-// 内部ハンドラー実装
-// ===========================================================================
-
-namespace
-{
-
-// ---------------------------------------------------------------------------
-// HandleModuleInitialize
-// ---------------------------------------------------------------------------
-
-/**
- * @brief  kTriglavPlugInSelectorModuleInitialize 処理
- *
- * モジュール ID を "com.cspbridgegimp.<GIMP_PLUGIN_ID>" に設定し、
- * モジュール種別を kTriglavPlugInModuleKindFilter に設定する。
- *
- * @param result        呼び出し結果（失敗時に kTriglavPlugInCallResultFailed を設定）
- * @param pluginServer  SDK サーバーオブジェクト
- */
-void HandleModuleInitialize(
-    TriglavPlugInInt*   result,
-    TriglavPlugInServer* pluginServer)
-{
-    auto* hostObject = pluginServer->hostObject;
-    auto& recSuite   = pluginServer->recordSuite;
-    auto* strSvc     = pluginServer->serviceSuite.stringService;
-
-    TriglavPlugInModuleInitializeRecord* moduleRec = recSuite.moduleInitializeRecord;
-    if (!moduleRec)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    // モジュール ID 文字列を構築: "com.cspbridgegimp.<GIMP_PLUGIN_ID>"
-    const std::string moduleIdStr = std::string("com.cspbridgegimp.") + GIMP_PLUGIN_ID;
-    ScopedTriglavString moduleIdObj(strSvc, moduleIdStr.c_str());
-
-    if (moduleRec->setModuleIDProc(hostObject, moduleIdObj.Get())
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    if (moduleRec->setModuleKindProc(hostObject, kTriglavPlugInModuleKindFilter)
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HandleFilterInitialize
-// ---------------------------------------------------------------------------
-
-/**
- * @brief  kTriglavPlugInSelectorFilterInitialize 処理
- *
- * フィルターカテゴリ名・フィルター名・プレビュー不可・ターゲット種別を設定する。
- * カテゴリ名: "GIMP Bridge"
- * フィルター名: GIMP_PLUGIN_ID マクロの値
- * TargetKinds: RGBAlpha + GrayAlpha（PoC スコープ）
- *
- * @param result        呼び出し結果（失敗時に kTriglavPlugInCallResultFailed を設定）
- * @param pluginServer  SDK サーバーオブジェクト
- */
-void HandleFilterInitialize(
-    TriglavPlugInInt*   result,
-    TriglavPlugInServer* pluginServer)
-{
-    auto* hostObject = pluginServer->hostObject;
-    auto& recSuite   = pluginServer->recordSuite;
-    auto* strSvc     = pluginServer->serviceSuite.stringService;
-
-    TriglavPlugInFilterInitializeRecord* filterInitRec
-        = TriglavPlugInGetFilterInitializeRecord(&recSuite);
-    if (!filterInitRec)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    // カテゴリ名
-    ScopedTriglavString categoryName(strSvc, "GIMP Bridge");
-    if (TriglavPlugInFilterInitializeSetFilterCategoryName(
-            &recSuite, hostObject, categoryName.Get(), '\0')
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    // フィルター名（プラグイン ID）
-    ScopedTriglavString filterName(strSvc, GIMP_PLUGIN_ID);
-    if (TriglavPlugInFilterInitializeSetFilterName(
-            &recSuite, hostObject, filterName.Get(), '\0')
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    // プレビュー不可
-    if (TriglavPlugInFilterInitializeSetCanPreview(
-            &recSuite, hostObject, kTriglavPlugInBoolFalse)
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    // ターゲット種別（RGBA + GrayAlpha）
-    TriglavPlugInInt targetKinds[] = {
-        kTriglavPlugInFilterTargetKindRasterLayerRGBAlpha,
-        kTriglavPlugInFilterTargetKindRasterLayerGrayAlpha,
-    };
-    if (TriglavPlugInFilterInitializeSetTargetKinds(
-            &recSuite, hostObject, targetKinds,
-            static_cast<TriglavPlugInInt>(std::size(targetKinds)))
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HandleFilterRun
-// ---------------------------------------------------------------------------
-
-/**
- * @brief  kTriglavPlugInSelectorFilterRun 処理
- *
- * 処理の流れ（spec.md §11）:
- *   1. offscreen / selectRect を CSP から取得
- *   2. ReadFromOffscreen → CspToRgba で RGBA バッファを準備
- *   3. HostContext に RGBA をセット（unique_lock で保護）
- *   4. bridge_config.json をロードしてプラグイン EXE パスを解決
- *   5. PluginSession を生成し RunFilter().get() で完了待機
- *   6. HostContext から RGBA を読み出す（shared_lock で保護）
- *   7. RgbaToCsp → WriteToOffscreen で CSP レイヤーに書き戻し
- *   8. updateDestinationOffscreenRectProc で書き戻し完了を通知
- *
- * @param result        呼び出し結果（失敗時に kTriglavPlugInCallResultFailed を設定）
- * @param pluginServer  SDK サーバーオブジェクト
- * @throws std::runtime_error  CSP API 失敗 / プラグイン EXE 未検出 / PluginSession 失敗
- */
-void HandleFilterRun(
-    TriglavPlugInInt*   result,
-    TriglavPlugInServer* pluginServer)
-{
-    auto* hostObject = pluginServer->hostObject;
-    auto& recSuite   = pluginServer->recordSuite;
-    auto* offSvc     = pluginServer->serviceSuite.offscreenService;
-
-    TriglavPlugInFilterRunRecord* runRec = TriglavPlugInGetFilterRunRecord(&recSuite);
-    if (!runRec)
-    {
-        *result = kTriglavPlugInCallResultFailed;
-        return;
-    }
-
-    // ------------------------------------------------------------------
-    // Step 1: CSP から offscreen オブジェクトと選択矩形を取得
-    // ------------------------------------------------------------------
-    TriglavPlugInOffscreenObject srcOffscreen = nullptr;
-    if (runRec->getSourceOffscreenProc(&srcOffscreen, hostObject)
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        throw std::runtime_error("HandleFilterRun: getSourceOffscreenProc failed");
-    }
-
-    TriglavPlugInOffscreenObject dstOffscreen = nullptr;
-    if (runRec->getDestinationOffscreenProc(&dstOffscreen, hostObject)
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        throw std::runtime_error("HandleFilterRun: getDestinationOffscreenProc failed");
-    }
-
-    TriglavPlugInRect selectRect{};
-    if (runRec->getSelectAreaRectProc(&selectRect, hostObject)
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        throw std::runtime_error("HandleFilterRun: getSelectAreaRectProc failed");
-    }
-
-    // ------------------------------------------------------------------
-    // Step 2: CSP バッファ → RGBA 変換
-    // ------------------------------------------------------------------
-    CspBridge::CspBuffer cspBuf =
-        CspBridge::ReadFromOffscreen(offSvc, srcOffscreen, selectRect);
-
-    std::vector<uint8_t> rgba = CspBridge::CspToRgba(cspBuf);
-
-    // ------------------------------------------------------------------
-    // Step 3: HostContext に RGBA データをコピー（unique_lock）
-    // ------------------------------------------------------------------
-    HostContext ctx(cspBuf.width, cspBuf.height);
-    {
-        std::unique_lock lock(ctx.Mutex());
-        std::memcpy(ctx.RgbaData(), rgba.data(), rgba.size());
-    }
-
-    // ------------------------------------------------------------------
-    // Step 4: bridge_config.json をロード → プラグイン EXE パスを解決
-    // ------------------------------------------------------------------
-    const std::string moduleDir   = GetModuleDir();
-    const std::string configPath  = moduleDir + "/config/bridge_config.json";
-    const BridgeConfig cfg        = LoadConfig(configPath);
-
-    const std::string exePath = FindPluginExe(cfg, GIMP_PLUGIN_ID);
-    if (exePath.empty())
-    {
-        throw std::runtime_error(
-            std::string("HandleFilterRun: plugin EXE not found for id=") + GIMP_PLUGIN_ID);
-    }
-
-    // ------------------------------------------------------------------
-    // Step 5: PluginSession を生成してフィルターを実行
-    // ------------------------------------------------------------------
-    {
-        FilterParams params;
-        params.procedureName = GIMP_PLUGIN_ID;
-        // PoC: image/drawable 以外の追加引数は空（将来 plugins.json から取得）
-        params.args          = {};
-
-        PluginSession session(exePath, cfg.gimpLibDir, PluginMode::Run, &ctx);
-        session.RunFilter(params).get(); // 完了まで同期待機
-    }
-
-    // ------------------------------------------------------------------
-    // Step 6: HostContext から処理済み RGBA を読み出す（shared_lock）
-    // ------------------------------------------------------------------
-    {
-        std::shared_lock lock(ctx.Mutex());
-        const uint8_t*   ptr = ctx.RgbaData();
-        rgba.assign(ptr, ptr + static_cast<ptrdiff_t>(cspBuf.width) * cspBuf.height * 4);
-    }
-
-    // ------------------------------------------------------------------
-    // Step 7: RGBA → CSP バッファ形式に変換し、オフスクリーンに書き戻す
-    // ------------------------------------------------------------------
-    CspBridge::CspBuffer resultBuf =
-        CspBridge::RgbaToCsp(rgba.data(), cspBuf.width, cspBuf.height, cspBuf);
-
-    CspBridge::WriteToOffscreen(offSvc, dstOffscreen, selectRect, resultBuf);
-
-    // ------------------------------------------------------------------
-    // Step 8: 書き戻し完了を CSP に通知
-    // ------------------------------------------------------------------
-    if (runRec->updateDestinationOffscreenRectProc(hostObject, &selectRect)
-        != kTriglavPlugInAPIResultSuccess)
-    {
-        throw std::runtime_error("HandleFilterRun: updateDestinationOffscreenRectProc failed");
-    }
-}
-
-} // anonymous namespace

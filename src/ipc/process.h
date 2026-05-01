@@ -86,6 +86,7 @@ struct PluginProcess
  * @param  gimpLibDir       libgimp-3.0-0.dll 等のあるディレクトリ
  * @param  mode             起動モード（Query / Run）
  * @param  protocolVersion  Wire Protocol バージョン（GIMP 3.2 = 0x0117 = 279）
+ * @param  stderrLogPath    子 stderr を書き出すファイルパス。空文字列なら親の stderr を継承
  * @return 起動済みの PluginProcess
  * @throws std::runtime_error 起動に失敗した場合
  */
@@ -93,7 +94,8 @@ PluginProcess SpawnPlugin(
     const std::string& exePath,
     const std::string& gimpLibDir,
     PluginMode mode,
-    int protocolVersion = 0x0117);
+    int protocolVersion = 0x0117,
+    const std::string& stderrLogPath = "");
 
 /**
  * @brief  プラグインプロセスの終了を待つ

@@ -577,8 +577,9 @@ PluginSession::PluginSession(
     const std::string& exePath,
     const std::string& gimpLibDir,
     PluginMode         mode,
-    HostContext*       hostContext)
-    : m_proc(SpawnPlugin(exePath, gimpLibDir, mode))
+    HostContext*       hostContext,
+    const std::string& stderrLogPath)
+    : m_proc(SpawnPlugin(exePath, gimpLibDir, mode, 0x0117, stderrLogPath))
     , m_channel(m_proc.readFd, m_proc.writeFd)
     , m_mode(mode)
     , m_hostContext(hostContext)
@@ -812,9 +813,45 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
         FilterParams params = m_filterParamsFuture.get();
 
         // 2. GP_CONFIG — run モード開始
-        m_channel.WriteConfig();
+        // 事前チェック: プロセスがすでに死亡しているか確認（即死診断）
+#ifdef _WIN32
+        {
+            const DWORD wr = WaitForSingleObject(m_proc.m_hProcess, 0);
+            if (wr == WAIT_OBJECT_0)
+            {
+                DWORD exitCode = 0;
+                GetExitCodeProcess(m_proc.m_hProcess, &exitCode);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "child died before WriteConfig, exit=0x%08X", static_cast<unsigned>(exitCode));
+                throw WireError(buf);
+            }
+        }
+#endif
+        try
+        {
+            m_channel.WriteConfig();
+        }
+        catch (const WireError&)
+        {
+            // WriteConfig 失敗 → 終了コードを取得して診断情報を付加して再投
+#ifdef _WIN32
+            {
+                DWORD exitCode = STILL_ACTIVE;
+                WaitForSingleObject(m_proc.m_hProcess, 500); // 最大 500ms 待機
+                GetExitCodeProcess(m_proc.m_hProcess, &exitCode);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "WriteConfig I/O error, child_exit=0x%08X", static_cast<unsigned>(exitCode));
+                throw WireError(buf);
+            }
+#else
+            throw;
+#endif
+        }
 
         // 3. GP_PROC_RUN でプラグインのフィルタープロシージャを呼び出す
+        try
         {
             const uint32_t nParams = 3u + static_cast<uint32_t>(params.args.size());
             m_channel.WriteUint32(static_cast<uint32_t>(GpMessageType::ProcRun));
@@ -831,9 +868,27 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
             m_channel.WriteString("GimpImage");
             m_channel.WriteInt32(HostContext::IMAGE_ID);
 
-            // param[2]: drawable_id
-            m_channel.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
-            m_channel.WriteString("GimpDrawable");
+            // param[2]: drawables
+            //
+            // GP_PARAM_TYPE_ID_ARRAY のワイヤーフォーマット
+            // (libgimpbase/gimpprotocol.c _gp_params_write IdArray ブランチ):
+            //
+            //   uint32  param_type              = GP_PARAM_TYPE_ID_ARRAY (=11)
+            //   string  param->type_name        = "GimpCoreObjectArray"
+            //                                     (GValue の GType 名; g_type_name(type))
+            //   string  d_id_array.type_name    = "GimpItem"
+            //                                     (要素 GType 名; GIMP_IS_ITEM チェックで決定。
+            //                                      GimpDrawable は GimpItem のサブタイプのため
+            //                                      element_type = GIMP_TYPE_ITEM = "GimpItem")
+            //   uint32  size                    = 要素数
+            //   int32[] data[size]              = 各要素の ID
+            //
+            // 出典: libgimp/gimpgpparams-body.c gimp_value_to_gp_param()
+            //       GimpCoreObjectArray ブランチ
+            m_channel.WriteUint32(static_cast<uint32_t>(GpParamType::IdArray));
+            m_channel.WriteString("GimpCoreObjectArray"); // param->type_name (outer GType)
+            m_channel.WriteString("GimpItem");            // d_id_array.type_name (element GType)
+            m_channel.WriteUint32(1u);                    // size = 1
             m_channel.WriteInt32(HostContext::DRAWABLE_ID);
 
             // param[3..]: フィルター固有引数（type_name は PoC のため空）
@@ -859,6 +914,24 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
                 }
             }
         }
+        catch (const WireError&)
+        {
+            // GP_PROC_RUN 書き込み失敗 → 子の終了コードを付加して再投
+#ifdef _WIN32
+            {
+                DWORD exitCode = STILL_ACTIVE;
+                WaitForSingleObject(m_proc.m_hProcess, 500);
+                GetExitCodeProcess(m_proc.m_hProcess, &exitCode);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "GP_PROC_RUN write failed, child_exit=0x%08X",
+                    static_cast<unsigned>(exitCode));
+                throw WireError(buf);
+            }
+#else
+            throw;
+#endif
+        }
 
         // 4. PDB ディスパッチ / タイル転送ループ
         while (!stopToken.stop_requested())
@@ -871,6 +944,15 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
             catch (const WireError&)
             {
                 break; // EOF: プラグインが終了
+            }
+
+            // 受信メッセージタイプをログ出力（診断用）
+            if (m_hostContext)
+            {
+                char dbgBuf[64];
+                std::snprintf(dbgBuf, sizeof(dbgBuf),
+                    "CSPBridge: RunLoop recv msgType=%u\n", msgType);
+                m_hostContext->Log(dbgBuf);
             }
 
             switch (static_cast<GpMessageType>(msgType))
@@ -900,11 +982,20 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
 
             case GpMessageType::ProcReturn:
             {
-                // フィルター完了 — 戻り値を読み捨てて終了。
+                // フィルター完了 — 戻り値を読んで status をログ出力してから終了。
                 // GP_PROC_RETURN と GP_PROC_RUN のペイロードは同一形式（GIMP Wire Protocol 仕様）:
                 //   string name, uint32 n_params, GPParam[n_params]
                 GpProcRunMsg result = m_channel.ReadProcRun();
-                (void)result;
+                if (m_hostContext && !result.params.empty())
+                {
+                    char dbgBuf[128];
+                    std::snprintf(dbgBuf, sizeof(dbgBuf),
+                        "CSPBridge: RunLoop ProcReturn name='%s' n_params=%zu status=%d\n",
+                        result.name.c_str(),
+                        result.params.size(),
+                        result.params[0].intValue);
+                    m_hostContext->Log(dbgBuf);
+                }
                 goto done;
             }
 
@@ -912,6 +1003,14 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
                 goto done;
 
             default:
+                // 未知のメッセージタイプをログに記録してからエラー
+                if (m_hostContext)
+                {
+                    char dbgBuf[64];
+                    std::snprintf(dbgBuf, sizeof(dbgBuf),
+                        "CSPBridge: RunLoop unknown msgType=%u\n", msgType);
+                    m_hostContext->Log(dbgBuf);
+                }
                 throw WireError("WorkerRunLoop: unexpected message type "
                     + std::to_string(msgType));
             }

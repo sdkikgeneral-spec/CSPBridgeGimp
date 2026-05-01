@@ -10,6 +10,7 @@
 
 #include "pdb_stubs.h"
 
+#include <cstdio>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,17 @@ HostContext::HostContext(uint32_t width, uint32_t height)
     , m_height(height)
     , m_rgbaBuffer(static_cast<size_t>(width) * height * 4u, 0u)
 {
+}
+
+void HostContext::SetLogCallback(std::function<void(const char*)> fn)
+{
+    m_logFn = std::move(fn);
+}
+
+void HostContext::Log(const char* msg) const
+{
+    if (m_logFn)
+        m_logFn(msg);
 }
 
 uint32_t HostContext::Width() const
@@ -79,6 +91,60 @@ static void WriteIntReturn(
     ch.WriteInt32(value);
 }
 
+/**
+ * @brief GP_PROC_RETURN に status=SUCCESS + 複数 Int を書く
+ *
+ * gimp-drawable-mask-intersect など、複数の整数を返すプロシージャ向け。
+ */
+static void WriteMultiIntReturn(
+    WireChannel&                ch,
+    const std::string&          procName,
+    const std::vector<std::pair<std::string, int32_t>>& retVals)
+{
+    ch.WriteUint32(static_cast<uint32_t>(GpMessageType::ProcReturn));
+    ch.WriteString(procName);
+    ch.WriteUint32(static_cast<uint32_t>(1u + retVals.size()));
+    // param[0]: status
+    ch.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+    ch.WriteString("GimpPDBStatusType");
+    ch.WriteInt32(GIMP_PDB_SUCCESS);
+    // param[1..]: 各戻り値
+    for (const auto& [typeName, val] : retVals)
+    {
+        ch.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+        ch.WriteString(typeName);
+        ch.WriteInt32(val);
+    }
+}
+
+/**
+ * @brief GP_PROC_RETURN に status=SUCCESS + GeglColor を書く
+ *
+ * gimp-context-get-foreground/background などのカラー返却プロシージャ向け。
+ * 色データは "R'G'B'A u8" (sRGB + alpha, 8bpc) フォーマットで送出する。
+ */
+static void WriteGeglColorReturn(
+    WireChannel&       ch,
+    const std::string& procName,
+    uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+{
+    ch.WriteUint32(static_cast<uint32_t>(GpMessageType::ProcReturn));
+    ch.WriteString(procName);
+    ch.WriteUint32(2u);
+    // param[0]: status
+    ch.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+    ch.WriteString("GimpPDBStatusType");
+    ch.WriteInt32(GIMP_PDB_SUCCESS);
+    // param[1]: GeglColor
+    ch.WriteUint32(static_cast<uint32_t>(GpParamType::GeglColor));
+    ch.WriteString("GeglColor");
+    ch.WriteUint32(4u);  // raw BABL data size = 4 bytes (R, G, B, A u8)
+    const uint8_t colorData[4] = { r, g, b, a };
+    ch.WriteBytes(colorData, 4u);
+    ch.WriteString("R'G'B'A u8");  // BABL encoding
+    ch.WriteUint32(0u);             // ICC profile length = 0
+}
+
 /** @brief GP_PROC_RETURN に status=SUCCESS + IdArray(ids) を書く */
 static void WriteIdArrayReturn(
     WireChannel&                ch,
@@ -111,6 +177,12 @@ void HostContext::Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const
     std::shared_lock lock(m_mutex);
 
     const std::string& name = msg.name;
+
+    {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "CSPBridge: PDB Dispatch '%s'\n", name.c_str());
+        Log(buf);
+    }
 
     // --- image 系 ---
     if (name == "gimp-image-list" || name == "gimp_image_list")
@@ -155,6 +227,122 @@ void HostContext::Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const
              || name == "gimp_drawable_has_alpha")
     {
         WriteIntReturn(channel, name, "gboolean", 1);
+    }
+    // --- drawable の bpp ---
+    else if (   name == "gimp-drawable-get-bpp"
+             || name == "gimp_drawable_get_bpp"
+             || name == "gimp-drawable-bpp"
+             || name == "gimp_drawable_bpp")
+    {
+        WriteIntReturn(channel, name, "gint", 4);  // RGBA = 4 bytes/pixel
+    }
+    // --- 選択領域とのマスク交差
+    //
+    // checkerboard.c が最初に呼ぶ。FALSE を返すと plugin が即座に
+    // GIMP_PDB_SUCCESS でリターンし、タイル転送が一切行われない。
+    // 選択なし（全選択）として drawable 全体の矩形を返す。
+    // ---
+    else if (   name == "gimp-drawable-mask-intersect"
+             || name == "gimp_drawable_mask_intersect")
+    {
+        WriteMultiIntReturn(channel, name, {
+            { "gboolean", 1                          },  // non_empty = TRUE
+            { "gint",     0                          },  // x
+            { "gint",     0                          },  // y
+            { "gint",     static_cast<int32_t>(m_width)  },  // width
+            { "gint",     static_cast<int32_t>(m_height) },  // height
+        });
+    }
+    // --- コンテキストカラー（FG / BG）
+    //
+    // psychobilly=FALSE の checkerboard は FG(黒) / BG(白) で市松模様を描画する。
+    // NULL カラーが返ると GEGL がゼロ（透明黒）で描画してしまうため
+    // 有効な GeglColor を返す必要がある。
+    // ---
+    else if (   name == "gimp-context-get-foreground"
+             || name == "gimp_context_get_foreground")
+    {
+        WriteGeglColorReturn(channel, name, 0, 0, 0, 255);  // 黒・不透明
+    }
+    else if (   name == "gimp-context-get-background"
+             || name == "gimp_context_get_background")
+    {
+        WriteGeglColorReturn(channel, name, 255, 255, 255, 255);  // 白・不透明
+    }
+    // --- アイテム / drawable / image ID 有効性チェック ---
+    //
+    // gimp_drawable_get_buffer() が内部で gimp_item_is_valid() →
+    // gimp_item_id_is_valid() → PDB "gimp-item-id-is-valid" を呼ぶ。
+    // FALSE が返ると buffer = NULL → GEGL タイル PUT 不発生 → 描画されない。
+    // shadow_buffer が NULL の場合、GEGL が NULL デリファレンスしてクラッシュ
+    // することもある（断続的な WriteExact I/O error の原因）。
+    else if (   name == "gimp-item-id-is-valid"
+             || name == "gimp_item_id_is_valid")
+    {
+        WriteIntReturn(channel, name, "gboolean", 1);
+    }
+    else if (   name == "gimp-drawable-id-is-valid"
+             || name == "gimp_drawable_id_is_valid")
+    {
+        WriteIntReturn(channel, name, "gboolean", 1);
+    }
+    else if (   name == "gimp-image-id-is-valid"
+             || name == "gimp_image_id_is_valid")
+    {
+        WriteIntReturn(channel, name, "gboolean", 1);
+    }
+    // --- アイテム種別判定 ---
+    //
+    // _gimp_plug_in_get_item が drawable ID の GType を決定するために
+    // これらを連続的に呼ぶ。戻り値は n_params=2（status + gboolean）。
+    // n_params=1 だと param[1] 参照で SIGSEGV になる。
+    // DRAWABLE_ID は通常レイヤーなので gimp-item-id-is-layer / is-drawable のみ TRUE。
+    else if (   name == "gimp-item-id-is-layer"
+             || name == "gimp_item_id_is_layer")
+    {
+        WriteIntReturn(channel, name, "gboolean", 1);  // drawable = layer
+    }
+    else if (   name == "gimp-item-id-is-drawable"
+             || name == "gimp_item_id_is_drawable")
+    {
+        WriteIntReturn(channel, name, "gboolean", 1);
+    }
+    else if (   name == "gimp-item-id-is-text-layer"
+             || name == "gimp_item_id_is_text_layer")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-item-id-is-layer-mask"
+             || name == "gimp_item_id_is_layer_mask")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-item-id-is-channel"
+             || name == "gimp_item_id_is_channel")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-item-id-is-selection"
+             || name == "gimp_item_id_is_selection")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-item-id-is-path"
+             || name == "gimp_item_id_is_path"
+             || name == "gimp-item-id-is-vectors"
+             || name == "gimp_item_id_is_vectors")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-item-id-is-group-layer"
+             || name == "gimp_item_id_is_group_layer")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-item-id-is-link-layer"
+             || name == "gimp_item_id_is_link_layer")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
     }
     // --- 未知のプロシージャ: status=SUCCESS のみ ---
     else

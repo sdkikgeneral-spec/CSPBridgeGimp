@@ -65,6 +65,7 @@ desktop.ini
 subprojects/*/
 !subprojects/packagefiles/
 !subprojects/packagefiles/**
+subprojects/.wraplock
 
 # TriglavPlugInSDK: CELSYS 著作権ヘッダーのコピー（ライセンス上リポジトリに含めない）
 extern/TriglavPlugInSDK/

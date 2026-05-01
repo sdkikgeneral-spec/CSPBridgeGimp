@@ -1,0 +1,31 @@
+[
+  {
+    "id": "PlugInCheckerboard",
+    "exe": "checkerboard.exe",
+    "procedure": "plug-in-checkerboard",
+    "menu": "<Image>/Filters/Render/Pattern/市松模様 (レガシー)(_C)...",
+    "blurb": "市松模様のパターンで塗りつぶします",
+    "params": [
+      {
+        "type": "INT32",
+        "name": "run-mode"
+      },
+      {
+        "type": "INT32",
+        "name": "image"
+      },
+      {
+        "type": "ID_ARRAY",
+        "name": "drawables"
+      },
+      {
+        "type": "INT32",
+        "name": "psychobilly"
+      },
+      {
+        "type": "INT32",
+        "name": "check-size"
+      }
+    ]
+  }
+]
