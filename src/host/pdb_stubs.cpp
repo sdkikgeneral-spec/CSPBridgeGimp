@@ -145,6 +145,51 @@ static void WriteGeglColorReturn(
     ch.WriteUint32(0u);             // ICC profile length = 0
 }
 
+/**
+ * @brief GP_PROC_RETURN に status=SUCCESS + String を書く
+ *
+ * gimp-drawable-get-format は Babl encoding 文字列のみを返す PDB。
+ * libgimp 側の `gimp_drawable_get_format` ラッパーが encoding + color profile
+ * を組み合わせて Babl format を生成する（gimpdrawable.c L340 参照）。
+ */
+static void WriteStringReturn(
+    WireChannel&       ch,
+    const std::string& procName,
+    const std::string& value)
+{
+    ch.WriteUint32(static_cast<uint32_t>(GpMessageType::ProcReturn));
+    ch.WriteString(procName);
+    ch.WriteUint32(2u);
+    // param[0]: status
+    ch.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+    ch.WriteString("GimpPDBStatusType");
+    ch.WriteInt32(GIMP_PDB_SUCCESS);
+    // param[1]: 戻り値文字列
+    ch.WriteUint32(static_cast<uint32_t>(GpParamType::String));
+    ch.WriteString("gchararray");
+    ch.WriteString(value);
+}
+
+/**
+ * @brief GP_PROC_RETURN に status のみを書く（任意ステータス）
+ *
+ * gimp-image-get-color-profile のように戻り値があるが「未設定」を伝えたい場合に使用。
+ * status != GIMP_PDB_SUCCESS にすると、libgimp 側ラッパーは戻り値読み取りをスキップする
+ * （`if (GIMP_VALUES_GET_ENUM(rv,0) == SUCCESS) ...` パターン）。
+ */
+static void WriteStatusOnly(
+    WireChannel&       ch,
+    const std::string& procName,
+    int32_t            status)
+{
+    ch.WriteUint32(static_cast<uint32_t>(GpMessageType::ProcReturn));
+    ch.WriteString(procName);
+    ch.WriteUint32(1u);
+    ch.WriteUint32(static_cast<uint32_t>(GpParamType::Int));
+    ch.WriteString("GimpPDBStatusType");
+    ch.WriteInt32(status);
+}
+
 /** @brief GP_PROC_RETURN に status=SUCCESS + IdArray(ids) を書く */
 static void WriteIdArrayReturn(
     WireChannel&                ch,
@@ -246,6 +291,42 @@ void HostContext::Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const
              || name == "gimp_drawable_is_indexed")
     {
         WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    // --- drawable の Babl format 文字列 ---
+    //
+    // libgimp の `gimp_drawable_get_format` は
+    //   1. _gimp_drawable_get_format (この PDB) → encoding 文字列を取得
+    //   2. gimp-item-get-image → 関連 image を取得
+    //   3. gimp_item_is_layer (型チェック、PDB ではない)
+    //   4. gimp-image-get-color-profile → ICC profile (NULL 可)
+    //   5. babl_format_with_space(encoding, space) で組み立て
+    // RGBA バッファを扱うため "R'G'B'A u8" を返す。
+    else if (   name == "gimp-drawable-get-format"
+             || name == "gimp_drawable_get_format")
+    {
+        WriteStringReturn(channel, name, "R'G'B'A u8");
+    }
+    // --- drawable から image を逆引き ---
+    //
+    // gimp_item_get_image() が呼ぶ。我々は IMAGE_ID 1 つしか持たないため常に 1 を返す。
+    else if (   name == "gimp-item-get-image"
+             || name == "gimp_item_get_image")
+    {
+        WriteIntReturn(channel, name, "GimpImage", IMAGE_ID);
+    }
+    // --- 画像のカラープロファイル ---
+    //
+    // 我々は ICC profile を持たないため status != SUCCESS で「プロファイル未設定」を伝える。
+    // libgimp 側 `_gimp_image_get_color_profile` は status==SUCCESS の時のみ
+    // bytes を読むため、EXECUTION_ERROR を返せば NULL profile として扱われ
+    // gimp_drawable_get_format は babl_format_with_space(encoding, NULL) で
+    // デフォルト sRGB space を使う。
+    else if (   name == "gimp-image-get-color-profile"
+             || name == "gimp_image_get_color_profile"
+             || name == "gimp-image-get-effective-color-profile"
+             || name == "gimp_image_get_effective_color_profile")
+    {
+        WriteStatusOnly(channel, name, GIMP_PDB_EXECUTION_ERROR);
     }
     // --- drawable の bpp ---
     else if (   name == "gimp-drawable-get-bpp"

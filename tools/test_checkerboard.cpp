@@ -19,8 +19,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <shared_mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #ifdef _WIN32
@@ -576,6 +578,48 @@ int main()
 
     printf("\n[stats] TileGET=%d TilePUT=%d\n",
         g_tileGetCount.load(), g_tilePutCount.load());
+
+    // -----------------------------------------------------------------------
+    // Step 9.5: dump host RGBA buffer as PPM for visual inspection
+    //   build/checkerboard_result.ppm — width x height RGB (alpha stripped)
+    // -----------------------------------------------------------------------
+    {
+        const std::string ppmPath = "build\\checkerboard_result.ppm";
+        const uint32_t w = ctx.Width();
+        const uint32_t h = ctx.Height();
+        std::shared_lock lock(ctx.Mutex());
+        const uint8_t*  rgba = ctx.RgbaData();
+
+        if (FILE* fp = std::fopen(ppmPath.c_str(), "wb"))
+        {
+            std::fprintf(fp, "P6\n%u %u\n255\n", w, h);
+            for (uint32_t i = 0; i < w * h; ++i)
+            {
+                const uint8_t rgb[3] = { rgba[i * 4 + 0], rgba[i * 4 + 1], rgba[i * 4 + 2] };
+                std::fwrite(rgb, 1, 3, fp);
+            }
+            std::fclose(fp);
+            printf("[dump] %s written (%u x %u RGB)\n", ppmPath.c_str(), w, h);
+        }
+        else
+        {
+            printf("[dump] failed to open %s for writing\n", ppmPath.c_str());
+        }
+
+        // Also report a few sample pixels so we can sanity-check without opening the file
+        if (w >= 16 && h >= 16)
+        {
+            auto px = [rgba, w](uint32_t x, uint32_t y) {
+                const uint8_t* p = rgba + (y * w + x) * 4;
+                return std::tuple<int, int, int, int>{ p[0], p[1], p[2], p[3] };
+            };
+            auto [r0, g0, b0, a0] = px(0, 0);
+            auto [r1, g1, b1, a1] = px(w / 2, h / 2);
+            auto [r2, g2, b2, a2] = px(w - 1, h - 1);
+            printf("[dump] px(0,0)=(%d,%d,%d,%d)  px(c,c)=(%d,%d,%d,%d)  px(W-1,H-1)=(%d,%d,%d,%d)\n",
+                r0, g0, b0, a0, r1, g1, b1, a1, r2, g2, b2, a2);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Step 10: Cleanup
