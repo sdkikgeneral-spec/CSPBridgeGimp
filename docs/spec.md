@@ -743,6 +743,62 @@ host   → plugin: GP_PROC_RUN  (フィルター呼び出し)
 
 **重要**: プラグインは GP_CONFIG 受信後に何も送らずそのまま GP_PROC_RUN を待つ。GP_HAS_INIT は `-query` モードでのみ送られ、`-run` モードでは不要。(`libgimp/gimpplugin.c` `gimp_plug_in_loop` にて確認。)
 
+#### GP_CONFIG ペイロードフォーマット（GIMP 3.2、2026-05-02 上流確認済み）
+
+確認ソース: `libgimpbase/gimpprotocol.c` `_gp_config_read` / `_gp_config_write`、`libgimpbase/gimpwire.c` `_gimp_wire_read_gegl_color`、`libgimp/gimp.c` `_gimp_config`。
+
+`-query` モードではプラグインが GP_CONFIG を**読まない**ため payload が不完全でもクラッシュしないが、`-run` モードでは `_gp_config_read` が下記 27 フィールドを順に読むため、**完全に揃えて送る必要がある**。
+
+`protocol_version` は **payload に含まれない**。`argv[2]` で渡し済み。
+
+```
+[1] tile_width             int32
+[2] tile_height            int32
+[3] shm_id                 int32   (PoC では -1 = shm 不使用)
+[4] check_size             int8
+[5] check_type             int8
+[6] check_custom_color1    gegl_color  (詳細下記)
+[7] check_custom_color2    gegl_color
+[8] show_help_button       int8
+[9] use_cpu_accel          int8
+[10] use_opencl            int8
+[11] export_color_profile  int8
+[12] export_comment        int8
+[13] export_exif           int8
+[14] export_xmp            int8
+[15] export_iptc           int8
+[16] update_metadata       int8
+[17] default_display_id    int32
+[18] app_name              string
+[19] wm_class              string
+[20] display_name          string
+[21] monitor_number        int32
+[22] timestamp             int32
+[23] icon_theme_dir        string
+[24] tile_cache_size       int64   (バイト単位)
+[25] swap_path             string
+[26] swap_compression      string
+[27] num_processors        int32
+```
+
+##### gegl_color のサブフィールド
+
+```
+uint32  pixel_size       (バイト数。0 〜 40)
+uint8[] pixel_data       (pixel_size バイト)
+string  encoding         (BABL フォーマット名、例: "R'G'B'A u8")
+uint32  icc_length       (ICC プロファイル長)
+uint8[] icc_data         (icc_length バイト)
+```
+
+##### **危険な NULL 落とし穴**
+
+- **`icc_length = 0` を送ると plugin がクラッシュ**: `_gimp_wire_read_gegl_color` は `icc_length=0` のとき `config->check_custom_iccN` を **NULL のまま**残す。続く `_gimp_config` で `g_bytes_get_data(NULL, ...)` が呼ばれ NULL deref → 0xC0000005。回避: ダミー 1 バイト (`0x00`) を ICC として送る。babl はパース失敗で `space=NULL` を返すが、後続処理は問題なし。
+- **`swap_path = ""` (length=0 = NULL)**: `gimp_file_new_for_config_path(NULL, ...)` → `g_file_get_path()` で NULL deref。回避: `%TEMP%\cspbridge-gimp-swap` などの実在パス文字列を送る。
+- **`pixel_size = 0` でも pixel GBytes は NULL**: ただし `_gimp_config` は色フォーマットチェックで bpp 不一致を検知して安全な代替値で `gegl_color_set_pixel` を呼ぶため、ICC ほど致命的ではない。とはいえ警告ログを避けるため有効な 4 バイト RGBA を送るのが望ましい。
+
+これらの NULL 危険性は `_gimp_config` のソース上の前提（GIMP 本体 host が常に有効値を送ってくる）に由来する。host emulator は GIMP 本体の挙動を完全に模倣する必要がある。
+
 #### GP_PROC_RUN ペイロードフォーマット
 
 ```
