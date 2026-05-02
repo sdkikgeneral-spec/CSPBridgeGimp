@@ -94,8 +94,18 @@ enum class GpParamDefType : uint32_t
     Curve         = 14,   ///< GIMP 3.2 追加 (protocol 0x0117)
 };
 
-/** @brief GIMP PDB 成功ステータス */
-static constexpr int32_t GIMP_PDB_SUCCESS          = 0;
+/**
+ * @brief GIMP PDB ステータスコード（GimpPDBStatusType enum 値、libgimpbase/gimpbaseenums.h）
+ *
+ * 注意: ENUM 順は EXECUTION_ERROR=0, CALLING_ERROR=1, PASS_THROUGH=2, SUCCESS=3, CANCEL=4。
+ * SUCCESS は 0 ではない。GP_PROC_RETURN の status param は wire 上 Int 型だが、
+ * 受け側で GimpPDBStatusType ENUM として g_value_set_enum される。
+ */
+static constexpr int32_t GIMP_PDB_EXECUTION_ERROR  = 0;
+static constexpr int32_t GIMP_PDB_CALLING_ERROR    = 1;
+static constexpr int32_t GIMP_PDB_PASS_THROUGH     = 2;
+static constexpr int32_t GIMP_PDB_SUCCESS          = 3;
+static constexpr int32_t GIMP_PDB_CANCEL           = 4;
 /** @brief Wire Protocol バージョン (GIMP 3.2 = 0x0117 = 279) */
 static constexpr uint32_t GIMP_PROTOCOL_VERSION_3_2 = 0x0117u;
 /** @brief GIMP 標準タイル幅 */

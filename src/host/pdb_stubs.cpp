@@ -228,6 +228,25 @@ void HostContext::Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const
     {
         WriteIntReturn(channel, name, "gboolean", 1);
     }
+    // --- drawable のカラーモード判定 ---
+    //
+    // checkerboard.c が描画前に gimp_drawable_is_rgb() / gimp_drawable_is_gray()
+    // を呼んで色空間を確認する。RGBA バッファを扱うので is-rgb=TRUE / is-gray=FALSE。
+    else if (   name == "gimp-drawable-is-rgb"
+             || name == "gimp_drawable_is_rgb")
+    {
+        WriteIntReturn(channel, name, "gboolean", 1);
+    }
+    else if (   name == "gimp-drawable-is-gray"
+             || name == "gimp_drawable_is_gray")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
+    else if (   name == "gimp-drawable-is-indexed"
+             || name == "gimp_drawable_is_indexed")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
     // --- drawable の bpp ---
     else if (   name == "gimp-drawable-get-bpp"
              || name == "gimp_drawable_get_bpp"
