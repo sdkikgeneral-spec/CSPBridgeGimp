@@ -301,14 +301,16 @@ public:
 
     /**
      * @brief  GP_CONFIG を書く（run フェーズ開始時にホストが送る）
-     * @param  protocolVersion  Wire Protocol バージョン（通常 0x0117 = 279）
+     *
+     * GIMP 3.2 の GP_CONFIG payload は 27 フィールド（_gp_config_read 参照）。
+     * protocol_version は payload に含まれず、argv[2] で渡す。
+     *
      * @param  tileWidth        タイル幅（通常 64）
      * @param  tileHeight       タイル高さ（通常 64）
      */
     void WriteConfig(
-        uint32_t protocolVersion = GIMP_PROTOCOL_VERSION_3_2,
-        uint32_t tileWidth       = GIMP_TILE_WIDTH,
-        uint32_t tileHeight      = GIMP_TILE_HEIGHT);
+        uint32_t tileWidth  = GIMP_TILE_WIDTH,
+        uint32_t tileHeight = GIMP_TILE_HEIGHT);
 
     int ReadFd()  const { return m_readFd; }
     int WriteFd() const { return m_writeFd; }

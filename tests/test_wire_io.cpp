@@ -400,17 +400,74 @@ TEST_CASE("WireChannel: WriteProcReturn writes correct wire format", "[wire_io]"
 // WriteConfig のフォーマット検証
 // ---------------------------------------------------------------------------
 
-TEST_CASE("WireChannel: WriteConfig writes correct wire format", "[wire_io]")
+TEST_CASE("WireChannel: WriteConfig writes GIMP 3.2 GPConfig payload", "[wire_io]")
 {
     PipePair pipe;
     WireChannel ch(pipe.readFd, pipe.writeFd);
 
-    ch.WriteConfig(GIMP_PROTOCOL_VERSION_3_2, GIMP_TILE_WIDTH, GIMP_TILE_HEIGHT);
+    ch.WriteConfig(GIMP_TILE_WIDTH, GIMP_TILE_HEIGHT);
 
+    // Header
     REQUIRE(ch.ReadUint32() == static_cast<uint32_t>(GpMessageType::Config));
-    REQUIRE(ch.ReadUint32() == GIMP_PROTOCOL_VERSION_3_2); // 0x0117 = 279
-    REQUIRE(ch.ReadUint32() == GIMP_TILE_WIDTH);           // 64
-    REQUIRE(ch.ReadUint32() == GIMP_TILE_HEIGHT);          // 64
+
+    // [1] tile_width / tile_height / shm_id (int32)
+    REQUIRE(ch.ReadInt32() == static_cast<int32_t>(GIMP_TILE_WIDTH));
+    REQUIRE(ch.ReadInt32() == static_cast<int32_t>(GIMP_TILE_HEIGHT));
+    REQUIRE(ch.ReadInt32() == -1);  // shm_id
+
+    // [2] check_size / check_type (int8)
+    uint8_t b = 0;
+    ch.ReadBytes(&b, 1); REQUIRE(b == 1);  // check_size
+    ch.ReadBytes(&b, 1); REQUIRE(b == 0);  // check_type
+
+    // [3] check_custom_color1 / 2 (gegl_color = uint32 size + bytes + string + uint32 icc_len + icc_bytes)
+    for (int i = 0; i < 2; ++i)
+    {
+        REQUIRE(ch.ReadUint32() == 4u);            // pixel size = 4 bytes
+        uint8_t px[4]{};
+        ch.ReadBytes(px, 4);
+        REQUIRE(px[0] == 0xFF);
+        REQUIRE(px[1] == 0xFF);
+        REQUIRE(px[2] == 0xFF);
+        REQUIRE(px[3] == 0xFF);
+        REQUIRE(ch.ReadString() == "R'G'B'A u8"); // encoding
+        REQUIRE(ch.ReadUint32() == 1u);            // icc length = 1 (dummy)
+        uint8_t icc = 0;
+        ch.ReadBytes(&icc, 1);
+        REQUIRE(icc == 0x00);
+    }
+
+    // [4] booleans (int8 × 9)
+    const uint8_t expectedBools[9] = { 1, 1, 0, 1, 1, 1, 1, 1, 1 };
+    for (int i = 0; i < 9; ++i)
+    {
+        ch.ReadBytes(&b, 1); REQUIRE(b == expectedBools[i]);
+    }
+
+    // [5] default_display_id (int32)
+    REQUIRE(ch.ReadInt32() == 0);
+
+    // [6] app_name / wm_class / display_name (string)
+    REQUIRE(ch.ReadString() == "CSPBridgeGimp");
+    REQUIRE(ch.ReadString() == "CSPBridgeGimp");
+    REQUIRE(ch.ReadString().empty());
+
+    // [7] monitor_number / timestamp (int32)
+    REQUIRE(ch.ReadInt32() == 0);
+    REQUIRE(ch.ReadInt32() == 0);
+
+    // [8] icon_theme_dir (string)
+    REQUIRE(ch.ReadString().empty());
+
+    // [9] tile_cache_size (int64)
+    REQUIRE(ch.ReadInt64() == static_cast<int64_t>(128) * 1024 * 1024);
+
+    // [10] swap_path / swap_compression (string)
+    REQUIRE(ch.ReadString().empty());
+    REQUIRE(ch.ReadString() == "none");
+
+    // [11] num_processors (int32)
+    REQUIRE(ch.ReadInt32() == 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -168,7 +168,7 @@ static GpProcInstall RunQueryPhase(
     try
     {
         printf("[query] Sending GP_CONFIG...\n");
-        ch.WriteConfig(GIMP_PROTOCOL_VERSION_3_2, 64u, 64u);
+        ch.WriteConfig(64u, 64u);
 
         bool running = true;
         while (running)
@@ -393,6 +393,26 @@ static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
                     g_tileGetCount.load(), g_tilePutCount.load());
                 break;
 
+            case GpMessageType::ProcReturn:
+            {
+                // Final result from the run procedure: parse and print status.
+                auto ret = ch.ReadProcRun(); // same wire format as GP_PROC_RUN
+                printf("    name='%s' n_params=%zu\n",
+                    ret.name.c_str(), ret.params.size());
+                for (size_t i = 0; i < ret.params.size(); ++i)
+                {
+                    const auto& p = ret.params[i];
+                    if (p.paramType == GpParamType::Int)
+                        printf("    [%zu] Int = %d\n", i, p.intValue);
+                    else if (p.paramType == GpParamType::String)
+                        printf("    [%zu] String = '%s'\n", i, p.stringValue.c_str());
+                    else
+                        printf("    [%zu] paramType=%u\n", i, static_cast<uint32_t>(p.paramType));
+                }
+                printf("    -> filter complete\n");
+                return;
+            }
+
             case GpMessageType::Quit:
                 printf("    -> plugin done\n");
                 return;
@@ -487,7 +507,7 @@ int main()
     printf("[send] GP_CONFIG\n");
     try
     {
-        ch.WriteConfig(GIMP_PROTOCOL_VERSION_3_2, 64u, 64u);
+        ch.WriteConfig(64u, 64u);
     }
     catch (const WireError& e)
     {

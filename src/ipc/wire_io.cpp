@@ -17,6 +17,7 @@
 #include "wire_io.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -561,12 +562,91 @@ void WireChannel::WriteQuit()
     WriteUint32(static_cast<uint32_t>(GpMessageType::Quit));
 }
 
-void WireChannel::WriteConfig(uint32_t protocolVersion, uint32_t tileWidth, uint32_t tileHeight)
+// GIMP 3.2 GP_CONFIG payload — 27 fields in the order read by
+// _gp_config_read (libgimpbase/gimpprotocol.c on the gimp-3-2 branch).
+// protocol_version is NOT in the payload (passed via argv[2] at spawn).
+void WireChannel::WriteConfig(uint32_t tileWidth, uint32_t tileHeight)
 {
+    auto WriteInt8 = [this](uint8_t v)
+    {
+        WriteExact(&v, 1);
+    };
+
+    // Minimal valid GeglColor.
+    // _gimp_wire_read_gegl_color leaves icc_data NULL when icc_length=0,
+    // and _gimp_config calls g_bytes_get_data(icc, ...) without a NULL check
+    // → segfault. Send a 1-byte dummy ICC so the GBytes is non-NULL; babl
+    // will fail to parse it and return space=NULL, which is fine.
+    auto WriteWhiteGeglColor = [this]()
+    {
+        WriteUint32(4u);                                  // pixel size = 4 bytes
+        const uint8_t white[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+        WriteBytes(white, 4u);                            // RGBA pixel
+        WriteString("R'G'B'A u8");                        // BABL encoding
+        WriteUint32(1u);                                  // ICC length = 1 (dummy)
+        const uint8_t iccDummy = 0x00;
+        WriteBytes(&iccDummy, 1u);
+    };
+
     WriteUint32(static_cast<uint32_t>(GpMessageType::Config));
-    WriteUint32(protocolVersion);
-    WriteUint32(tileWidth);
-    WriteUint32(tileHeight);
+
+    // [1] tile_width / tile_height / shm_id (int32)
+    WriteInt32(static_cast<int32_t>(tileWidth));
+    WriteInt32(static_cast<int32_t>(tileHeight));
+    WriteInt32(-1);  // shm_id: no shared memory in PoC
+
+    // [2] check_size / check_type (int8) — checkerboard preview pattern config
+    WriteInt8(1);
+    WriteInt8(0);
+
+    // [3] check_custom_color1 / 2 (gegl_color) — minimal valid white RGBA
+    WriteWhiteGeglColor();
+    WriteWhiteGeglColor();
+
+    // [4] booleans (int8): show_help_button .. update_metadata
+    WriteInt8(1);  // show_help_button
+    WriteInt8(1);  // use_cpu_accel
+    WriteInt8(0);  // use_opencl
+    WriteInt8(1);  // export_color_profile
+    WriteInt8(1);  // export_comment
+    WriteInt8(1);  // export_exif
+    WriteInt8(1);  // export_xmp
+    WriteInt8(1);  // export_iptc
+    WriteInt8(1);  // update_metadata
+
+    // [5] default_display_id (int32)
+    WriteInt32(0);
+
+    // [6] app_name / wm_class / display_name (string)
+    WriteString("CSPBridgeGimp");
+    WriteString("CSPBridgeGimp");
+    WriteString("");
+
+    // [7] monitor_number / timestamp (int32)
+    WriteInt32(0);
+    WriteInt32(0);
+
+    // [8] icon_theme_dir (string)
+    WriteString("");
+
+    // [9] tile_cache_size (int64) — 128 MB default
+    WriteInt64(static_cast<int64_t>(128) * 1024 * 1024);
+
+    // [10] swap_path / swap_compression (string)
+    // swap_path must be a real path: gimp_file_new_for_config_path(NULL, ...) +
+    // g_file_get_path() NULL-derefs in _gimp_config.
+    {
+        const char* tmp = std::getenv("TEMP");
+        if (tmp == nullptr || *tmp == '\0')
+            tmp = std::getenv("TMP");
+        if (tmp == nullptr || *tmp == '\0')
+            tmp = "C:\\Windows\\Temp";
+        WriteString(std::string(tmp) + "\\cspbridge-gimp-swap");
+    }
+    WriteString("none");
+
+    // [11] num_processors (int32)
+    WriteInt32(1);
 }
 
 // ---------------------------------------------------------------------------
