@@ -40,8 +40,8 @@ class HostContext
 public:
     /** @brief ダミー image ID（run フェーズでは常に 1） */
     static constexpr int32_t IMAGE_ID        = 1;
-    /** @brief ダミー drawable ID（run フェーズでは常に 1） */
-    static constexpr int32_t DRAWABLE_ID     = 1;
+    /** @brief ダミー drawable ID（IMAGE_ID と異なる値にしてプロキシキャッシュ衝突を防ぐ） */
+    static constexpr int32_t DRAWABLE_ID     = 2;
     /** @brief GIMP_IMAGE_TYPE_RGBA = 1 (libgimpbase/gimpbasetypes.h) */
     static constexpr int32_t IMAGE_TYPE_RGBA = 1;
 

@@ -334,6 +334,11 @@ void HostContext::Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const
     {
         WriteIntReturn(channel, name, "gboolean", 0);
     }
+    else if (   name == "gimp-item-id-is-vector-layer"
+             || name == "gimp_item_id_is_vector_layer")
+    {
+        WriteIntReturn(channel, name, "gboolean", 0);
+    }
     else if (   name == "gimp-item-id-is-group-layer"
              || name == "gimp_item_id_is_group_layer")
     {

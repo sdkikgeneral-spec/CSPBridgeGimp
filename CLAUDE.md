@@ -8,7 +8,7 @@ CSPBridgeGimp is a C++ project that bridges Clip Studio Paint (CSP) plugins to r
 
 **このプロジェクトは技術検証（PoC）を目的としており、有料コンテンツ・商用製品ではありません。**
 
-This project is currently in the **research/planning phase**. See `docs/GIMP_Bridge_Summary.md` for the technical investigation and architecture details (written in Japanese).
+This project is currently in the **E2E verification phase** (フェーズ1実装完了済み、実機デバッグ中). See `docs/GIMP_Bridge_Summary.md` for the technical investigation and architecture details (written in Japanese).
 
 ## Architecture
 
@@ -60,42 +60,7 @@ All GIMP libraries (`libgimpwire`, `libgimpbase`, `libgimp`) are **LGPL v3**. Us
 
 **Doxygen コメント規約**
 
-ファイルヘッダー（各 `.h` / `.cpp` の先頭）:
-
-```cpp
-/**
- * @file   config.h
- * @brief  JSON 設定ファイルの読み込みと Bridge 設定の管理
- * @author 作成者名
- * @date   YYYY-MM-DD
- */
-```
-
-関数・メソッドヘッダー（宣言側 `.h` に記載）:
-
-```cpp
-/**
- * @brief  設定ファイルを読み込み、プレースホルダーを展開して返す
- * @param  configPath  bridge_config.json のファイルパス
- * @return 展開済みの BridgeConfig。ファイル不在時はデフォルト値
- */
-BridgeConfig LoadConfig(const std::string& configPath);
-```
-
-クラス:
-
-```cpp
-/**
- * @brief GIMP プラグイン 1 プロセスとの通信セッションを管理するクラス
- *
- * 子プロセス 1 本につき 1 インスタンスを生成し、std::jthread で
- * Wire Protocol の送受信を専任する。
- */
-class PluginSession
-{
-    ...
-};
-```
+ファイル先頭に `@file/@brief/@author/@date`、関数・クラスに `@brief/@param/@return` を記載。宣言側（`.h`）に書き、既存ソースのフォーマットに倣う。
 
 ドキュメント生成: `doxygen Doxyfile`（出力先: `docs/doxygen/html/`）
 

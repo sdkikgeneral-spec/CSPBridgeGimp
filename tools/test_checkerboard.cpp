@@ -366,8 +366,15 @@ static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
             case GpMessageType::ProcRun:
             {
                 auto msg = ch.ReadProcRun();
-                printf("    name='%s' n_params=%zu\n",
-                    msg.name.c_str(), msg.params.size());
+                printf("    name='%s' n_params=%zu", msg.name.c_str(), msg.params.size());
+                for (const auto& p : msg.params)
+                {
+                    if (p.paramType == GpParamType::Int)
+                        printf("  [Int=%d]", p.intValue);
+                    else if (p.paramType == GpParamType::String)
+                        printf("  [Str='%s']", p.stringValue.c_str());
+                }
+                printf("\n");
                 ctx.Dispatch(msg, ch);
                 break;
             }
