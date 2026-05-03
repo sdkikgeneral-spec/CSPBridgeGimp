@@ -884,16 +884,17 @@ plugin → host : GP_TILE_ACK   { (ペイロードなし) }
 #### gimp_tile_put（プラグインがタイルを書き戻す）
 
 ```
-plugin → host : GP_TILE_REQ   { drawable_id = -1, tile_num(uint32), shadow(uint32) }
-host   → plugin: GP_TILE_DATA  { drawable_id=-1, tile_num, shadow, bpp, width, height,
-                                  use_shm(uint32=0), pixel_data は空 }
-  ↑ ホストはここで shm 設定を返す（PoC では use_shm=0）
+plugin → host : GP_TILE_REQ   { drawable_id = -1, tile_num = 0, shadow = 0 }
+                                ↑ 全フィールド固定値（実情報は次の DATA に乗る）
+host   → plugin: GP_TILE_DATA  { -1, 0, 0, bpp=0, width=0, height=0, use_shm=0 }
+                                ↑ **すべて 0 を送る**（length=0*0*0=0 で pixel_data 不要）
 plugin → host : GP_TILE_DATA  { drawable_id, tile_num, shadow, bpp, width, height,
                                   use_shm=0, pixel_data[width*height*bpp] }
 host   → plugin: GP_TILE_ACK   { (ペイロードなし) }
 ```
 
-**重要**: `drawable_id == -1` が PUT のシグナル。`app/plug-in/gimpplugin-message.c` の `gimp_plug_in_handle_tile_request()` はこの値でルーティングを切り替える。
+**重要 1**: `drawable_id == -1` が PUT のシグナル。`gimptilebackendplugin.c::gimp_tile_put` (line 413) は REQ で `drawable_id=-1, tile_num=0, shadow=0` を固定送信し、実タイル番号は次の DATA に乗せる。
+**重要 2**: ホストのプロンプトは `bpp=0, width=0, height=0` にすること。受信側 `_gp_tile_data_read` (`libgimpbase/gimpprotocol.c:850`) は `use_shm==0` の時 `width*height*bpp` バイトの pixel_data を必ず読むため、非ゼロにするとプラグインが pixel_data 待ちでブロックする（GIMP 本体: `app/plug-in/gimpplugin-message.c:199-208`）。
 
 ### 10.2 メッセージペイロードフォーマット（上流確認済み）
 

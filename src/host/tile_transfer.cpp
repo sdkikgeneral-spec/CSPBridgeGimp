@@ -222,43 +222,32 @@ void HandleTileRequest(WireChannel& channel, HostContext& ctx)
         // ---------------------------------------------------------------
         // PUT パス: プラグインからタイルを受信してバッファに書き戻す
         //
-        //   host → plugin: GP_TILE_DATA { PUT_SIGNAL, tile_num, shadow,
-        //                                 bpp=4, width, height, use_shm=0 }
-        //                                 ← pixel_data なし（プロンプト）
+        // GIMP 本体 (`app/plug-in/gimpplugin-message.c::gimp_plug_in_handle_tile_put`,
+        // line 199-208) の PUT プロンプト形式:
+        //   drawable_id=-1, tile_num=0, shadow=0, **bpp=0, width=0, height=0**,
+        //   use_shm=(shm有無), data=NULL
+        // 受信側 `_gp_tile_data_read` は use_shm=0 の時 width*height*bpp バイトを
+        // 必ず読むため、bpp/w/h を 0 にしないと pixel_data 待ちでブロックする。
+        //
+        //   host → plugin: GP_TILE_DATA { -1, 0, 0, 0, 0, 0, use_shm=0 } (空プロンプト)
         //   plugin → host: GP_TILE_DATA { drawable_id, tile_num, shadow,
         //                                 bpp, w, h, use_shm=0,
         //                                 pixel_data[w*h*bpp] }
         //   host → plugin: GP_TILE_ACK  { ペイロードなし }
         // ---------------------------------------------------------------
+        (void)tileNum;  // PUT REQ の tile_num は常に 0（無視）
+        (void)shadow;   // PUT REQ の shadow は常に 0（無視）
 
-        // プロンプト用の幅・高さを決定する（HostContext から取得）
-        const uint32_t imgW   = ctx.Width();
-        const uint32_t imgH   = ctx.Height();
-
-        uint32_t promptTileX = 0u;
-        uint32_t promptTileY = 0u;
-        TileNumToXY(tileNum, imgW, promptTileX, promptTileY);
-        const uint32_t promptPx = promptTileX * GIMP_TILE_WIDTH;
-        const uint32_t promptPy = promptTileY * GIMP_TILE_HEIGHT;
-
-        // 範囲外は GET と同じ扱いでクリップ
-        const uint32_t promptW = (promptPx < imgW)
-            ? TileRegionWidth(promptPx, imgW)
-            : GIMP_TILE_WIDTH;
-        const uint32_t promptH = (promptPy < imgH)
-            ? TileRegionHeight(promptPy, imgH)
-            : GIMP_TILE_HEIGHT;
-
-        // GP_TILE_DATA プロンプトを送信（pixel_data なし）
+        // GP_TILE_DATA プロンプトを送信（GIMP app 仕様: 全ゼロ）
         channel.WriteUint32(static_cast<uint32_t>(GpMessageType::TileData));
         channel.WriteUint32(PUT_SIGNAL);
-        channel.WriteUint32(tileNum);
-        channel.WriteUint32(shadow);
-        channel.WriteUint32(BPP);
-        channel.WriteUint32(promptW);
-        channel.WriteUint32(promptH);
+        channel.WriteUint32(0u); // tile_num
+        channel.WriteUint32(0u); // shadow
+        channel.WriteUint32(0u); // bpp = 0
+        channel.WriteUint32(0u); // width = 0
+        channel.WriteUint32(0u); // height = 0
         channel.WriteUint32(0u); // use_shm = 0
-        // pixel_data は送らない（PUT プロンプトは空）
+        // pixel_data なし（length = 0*0*0 = 0 なので _gp_tile_data_read は何も読まない）
 
         // プラグインからの GP_TILE_DATA（実際のピクセルデータ）を受信
         const uint32_t dataType = channel.ReadUint32();
@@ -274,9 +263,7 @@ void HandleTileRequest(WireChannel& channel, HostContext& ctx)
         const uint32_t recvH          = channel.ReadUint32();
         const uint32_t recvUseShm     = channel.ReadUint32();
 
-        // 参照を使わず static_cast で警告を回避
         (void)recvDrawableId;
-        (void)recvTileNum;
         (void)recvShadow;
         (void)recvUseShm;
 
@@ -287,10 +274,12 @@ void HandleTileRequest(WireChannel& channel, HostContext& ctx)
 
         channel.ReadBytes(s_scratch.data(), pixelBytes);
 
-        // RGBA バッファに書き戻す（unique_lock）
+        // RGBA バッファに書き戻す（unique_lock）— 実タイル番号は recvTileNum 側
         {
+            const uint32_t imgW = ctx.Width();
+            const uint32_t imgH = ctx.Height();
             std::unique_lock lock(ctx.Mutex());
-            CopyTileToBuffer(ctx.RgbaData(), imgW, imgH, tileNum, recvW, recvH);
+            CopyTileToBuffer(ctx.RgbaData(), imgW, imgH, recvTileNum, recvW, recvH);
         }
 
         // GP_TILE_ACK を送信（ペイロードなし）

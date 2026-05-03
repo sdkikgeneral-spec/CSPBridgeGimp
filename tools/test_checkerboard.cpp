@@ -448,6 +448,11 @@ static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
 
 int main()
 {
+    // ファイルリダイレクト時の全バッファリングを無効化し、
+    // プラグインクラッシュ直前までの printf を確実にフラッシュする。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
     // -----------------------------------------------------------------------
     // Step 1: Load config
     // -----------------------------------------------------------------------
@@ -606,18 +611,22 @@ int main()
             printf("[dump] failed to open %s for writing\n", ppmPath.c_str());
         }
 
-        // Also report a few sample pixels so we can sanity-check without opening the file
-        if (w >= 16 && h >= 16)
+        // 16-px チェックサイズで psychobilly=0 の場合の市松模様検証:
+        //   セル (xp, yp) = (x/16, y/16)、val = (xp&1) != (yp&1)
+        //   val == false → BG (白)、val == true → FG (黒)
+        if (w >= 32 && h >= 32)
         {
             auto px = [rgba, w](uint32_t x, uint32_t y) {
                 const uint8_t* p = rgba + (y * w + x) * 4;
                 return std::tuple<int, int, int, int>{ p[0], p[1], p[2], p[3] };
             };
-            auto [r0, g0, b0, a0] = px(0, 0);
-            auto [r1, g1, b1, a1] = px(w / 2, h / 2);
-            auto [r2, g2, b2, a2] = px(w - 1, h - 1);
-            printf("[dump] px(0,0)=(%d,%d,%d,%d)  px(c,c)=(%d,%d,%d,%d)  px(W-1,H-1)=(%d,%d,%d,%d)\n",
-                r0, g0, b0, a0, r1, g1, b1, a1, r2, g2, b2, a2);
+            auto [a0, b0, c0, d0] = px(0,  0);   // セル (0,0) → BG=白
+            auto [a1, b1, c1, d1] = px(16, 0);   // セル (1,0) → FG=黒
+            auto [a2, b2, c2, d2] = px(0,  16);  // セル (0,1) → FG=黒
+            auto [a3, b3, c3, d3] = px(16, 16);  // セル (1,1) → BG=白
+            printf("[dump] px(0,0)=(%d,%d,%d,%d) BG  px(16,0)=(%d,%d,%d,%d) FG  "
+                   "px(0,16)=(%d,%d,%d,%d) FG  px(16,16)=(%d,%d,%d,%d) BG\n",
+                a0, b0, c0, d0, a1, b1, c1, d1, a2, b2, c2, d2, a3, b3, c3, d3);
         }
     }
 
