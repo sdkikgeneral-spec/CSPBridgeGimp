@@ -468,8 +468,8 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                     FilterParams params;
                     params.procedureName = GIMP_PLUGIN_PROC;
                     params.args = {
-                        GpParam{GpParamType::Int, "", 0,  0.0},  // psychobilly
-                        GpParam{GpParamType::Int, "", 10, 0.0},  // check-size
+                        GpParam{GpParamType::Int, "gboolean", "", 0,  0.0},  // psychobilly
+                        GpParam{GpParamType::Int, "gint",     "", 10, 0.0},  // check-size
                     };
 
                     const std::string stderrLog = moduleDir + "/cspbridge_stderr.log";

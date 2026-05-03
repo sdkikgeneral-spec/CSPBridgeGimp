@@ -971,11 +971,26 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
             m_channel.WriteUint32(1u);                    // size = 1
             m_channel.WriteInt32(HostContext::DRAWABLE_ID);
 
-            // param[3..]: フィルター固有引数（type_name は PoC のため空）
+            // param[3..]: フィルター固有引数
             for (const auto& arg : params.args)
             {
                 m_channel.WriteUint32(static_cast<uint32_t>(arg.paramType));
-                m_channel.WriteString(""); // type_name: PoC 簡略化
+                // type_name: NULL だと g_type_from_name(NULL) がアサーション失敗するため有効名が必要。
+                // typeName が指定されている場合はそれを優先し、未指定の場合は paramType から導出する。
+                if (!arg.typeName.empty())
+                {
+                    m_channel.WriteString(arg.typeName);
+                }
+                else
+                {
+                    switch (arg.paramType)
+                    {
+                    case GpParamType::Double: m_channel.WriteString("gdouble");    break;
+                    case GpParamType::String:
+                    case GpParamType::File:   m_channel.WriteString("gchararray"); break;
+                    default:                  m_channel.WriteString("gint");       break;
+                    }
+                }
                 switch (arg.paramType)
                 {
                 case GpParamType::Int:

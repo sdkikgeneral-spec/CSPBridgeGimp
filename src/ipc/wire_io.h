@@ -164,6 +164,7 @@ struct GpProcInstall
 struct GpParam
 {
     GpParamType paramType   = GpParamType::Int;
+    std::string typeName;    ///< Wire 上の GType 名（送信専用, 例: "gboolean", "gint"）
     std::string stringValue; ///< STRING / FILE 型のみ有効
     int32_t     intValue    = 0;
     double      doubleValue = 0.0;
