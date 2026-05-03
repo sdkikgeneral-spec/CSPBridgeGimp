@@ -172,95 +172,256 @@ std::string FindPluginExe(const BridgeConfig& cfg, const std::string& pluginName
 
 ## 4. マルチプラグイン DLL アーキテクチャ
 
+> **2026-05-03 方針転換**: 旧仕様（実行時 `plugins.json` 解析 + 動的 UI 生成）を廃止し、
+> **静的プラグイン層アーキテクチャ**に移行した。理由はランタイム生成のバグリスク回避と、
+> 既知パラメーターを持つ GIMP プラグインに対してコンパイル時の型安全性を確保するため。
+
 ### 4.1 基本方針
 
-CSP は **1エフェクト = 1プラグイン DLL** の構造を持つ。GIMP プラグイン数は事前に確定できないため、**CSPBridge パターン**（`EFFECT_ID` のビルド時固定）を応用する。
+CSP は **1エフェクト = 1プラグイン DLL** の構造を持つ。各 GIMP プラグインに対応する
+C++ 実装ファイル（`src/plugins/*.cpp`）を事前に用意し、ビルド時に選択する。
+**実行時の `plugins.json` 解析は行わない**。
 
 ```
-plugins.json（スキャナー生成）
+plugins.json（ビルド選択リスト）
     ↓ meson setup 時に読み込み
 meson.build
     ↓ foreach でプラグイン数だけ shared_library() を生成
-CSPBridgeGimp_GaussBlur.dll    ← GIMP_PLUGIN_ID="GaussBlur" でビルド
-CSPBridgeGimp_Unsharp.dll      ← GIMP_PLUGIN_ID="Unsharp" でビルド
-CSPBridgeGimp_Pixelize.dll     ← GIMP_PLUGIN_ID="Pixelize" でビルド
+CSPBridgeGimp_PlugInCheckerboard.cpm  ← checkerboard.cpp をリンク
+CSPBridgeGimp_GaussBlur.cpm           ← gauss_blur.cpp をリンク（将来）
+CSPBridgeGimp_Pixelize.cpm            ← pixelize.cpp をリンク（将来）
 ```
 
-DLL ソースは1本共通。`GIMP_PLUGIN_ID` マクロがビルド時に確定し、実行時に `plugins.json` から自分の設定を引く。
+### 4.2 層構成
 
-### 4.2 CSPBridge との対応関係
+| 層 | 役割 | ファイル |
+|---|---|---|
+| **CSP エントリ（コア）** | `TriglavPluginCall`・CSP ライフサイクル全般・`DbgLog`・`GetModuleDir` | `src/csp/plugin_entry.cpp` |
+| **プラグイン層（薄いラッパー）** | GIMP 固有の EXE 名・プロシージャ名・CSP UI 定義・args 組み立て | `src/plugins/<id>.cpp` |
+| **Wire Protocol / Tile** | GIMP プロセス起動・タイル送受信 | `src/ipc/`・`src/host/` |
 
-| CSPBridge | CSPBridgeGimp |
-|---|---|
-| `EFFECT_ID="Blur"` | `GIMP_PLUGIN_ID="GaussBlur"` |
-| `CSPBridgeEffects.dll`（C# 共通処理） | `plugins.json`（共通メタデータ） |
-| `CSPBridgeBlur.dll` / `CSPBridgeHSV.dll` | `CSPBridgeGimp_GaussBlur.dll` / `CSPBridgeGimp_Unsharp.dll` |
+コアは `GetProperties()` / `BuildFilterParams()` を呼び出すだけで、GIMP プラグイン固有の
+知識を一切持たない。各 `src/plugins/*.cpp` がその知識をカプセル化する。
 
-### 4.3 plugins.json スキーマ
+### 4.3 plugin_iface.h — プラグイン層インターフェース
 
-スキャナーツール（`tools/scanner/scan_and_select.py`）が生成する。
+各 `src/plugins/*.cpp` は以下の 3 つの自由関数をリンク時に提供する（仮想関数不要・1 DLL に 1 プラグイン）。
+
+ヘッダー: **`src/plugins/plugin_iface.h`**
+
+```cpp
+/**
+ * @file   plugin_iface.h
+ * @brief  プラグイン層インターフェース定義
+ * @author CSPBridgeGimp
+ * @date   2026-05-03
+ */
+#pragma once
+#include <string>
+#include <vector>
+#include "../ipc/wire_io.h"   // FilterParams, GpParam
+#include "TriglavPlugInSDK.h"
+
+/// @brief GIMP プラグイン実行情報
+struct PluginInfo
+{
+    std::string exeName;   ///< EXE ファイル名（拡張子なし。例: "checkerboard"）
+    std::string procName;  ///< プロシージャ名（例: "plug-in-checkerboard"）
+};
+
+/// @brief CSP プロパティ UI 整数スライダー定義
+struct PropItemDef
+{
+    int         key;         ///< 1-based キー（addItemProc に渡す値）
+    std::string label;       ///< UI 表示ラベル
+    int         defaultVal;  ///< デフォルト値
+    int         minVal;      ///< 最小値
+    int         maxVal;      ///< 最大値
+};
+
+/** @brief プラグインの EXE 名・プロシージャ名を返す */
+PluginInfo GetPluginInfo();
+
+/**
+ * @brief  CSP プロパティ UI に表示するスライダー定義一覧を返す
+ * @return PropItemDef のリスト。空の場合は UI なし
+ */
+std::vector<PropItemDef> GetProperties();
+
+/**
+ * @brief  CSP プロパティ現在値から GIMP FilterParams を組み立てる
+ * @param  propObj  FilterRun 時に TriglavPlugInFilterRunGetProperty で取得した propObj
+ * @param  propSvc  PropertyService ポインタ（getIntegerValueProc で値を読む）
+ * @return GIMP PluginSession に渡す FilterParams
+ */
+FilterParams BuildFilterParams(
+    TriglavPlugInPropertyObject   propObj,
+    TriglavPlugInPropertyService* propSvc);
+```
+
+#### plugin_entry.cpp の汎用化
+
+`FilterInitialize` は `GetProperties()` の返値でプロパティ UI を動的生成する（コンパイル時確定データ）。
+`FilterRun` は `GetPluginInfo()` で EXE/プロシージャ名を取得し、`BuildFilterParams()` で args を組み立てる。
+
+```cpp
+// FilterRun 内（plugin_entry.cpp）— recSuite / hostObject / bd は既存変数
+const PluginInfo info     = GetPluginInfo();
+const std::string exePath = FindPluginExe(cfg, info.exeName);
+
+// CSP から現在のプロパティ値を取得（TriglavPlugInRecordFunction.h マクロ）
+TriglavPlugInPropertyObject propObj = nullptr;
+TriglavPlugInFilterRunGetProperty(&recSuite, &propObj, hostObject);
+
+FilterParams params = BuildFilterParams(propObj, bd->pPropertyService);
+// params.procedureName は BuildFilterParams 内で設定
+```
+
+`GIMP_PLUGIN_EXE` / `GIMP_PLUGIN_PROC` マクロは廃止。`GIMP_PLUGIN_ID` のみ残す（CSP moduleId / filterName 用）。
+
+> **実装状況（2026-05-03 時点）**: 現在の `src/csp/plugin_entry.cpp` は未移行。
+> `GIMP_PLUGIN_EXE` / `GIMP_PLUGIN_PROC` マクロ参照とハードコード args（check-size=10 固定）
+> が残っている。これらの削除と `GetPluginInfo()` / `BuildFilterParams()` への置き換えは
+> 別途「実装フェーズ: plugin_entry.cpp 汎用化」ステップで実施する。
+
+### 4.4 プラグイン実装例（`src/plugins/checkerboard.cpp`）
+
+```cpp
+/**
+ * @file   checkerboard.cpp
+ * @brief  plug-in-checkerboard ブリッジ実装
+ * @author CSPBridgeGimp
+ * @date   2026-05-03
+ */
+#include "plugin_iface.h"
+
+PluginInfo GetPluginInfo()
+{
+    return {"checkerboard", "plug-in-checkerboard"};
+}
+
+std::vector<PropItemDef> GetProperties()
+{
+    return {PropItemDef{1, "Check Size", 10, 1, 200}};
+}
+
+FilterParams BuildFilterParams(
+    TriglavPlugInPropertyObject   propObj,
+    TriglavPlugInPropertyService* propSvc)
+{
+    TriglavPlugInInt checkSize = 10;
+    if (propObj && propSvc)
+        propSvc->getIntegerValueProc(propObj, 1, &checkSize);
+
+    FilterParams params;
+    params.procedureName = "plug-in-checkerboard";
+    params.args = {
+        GpParam{GpParamType::Int, "gboolean", "", 0,              0.0},  // psychobilly
+        GpParam{GpParamType::Int, "gint",     "", (int)checkSize, 0.0},  // check-size
+    };
+    return params;
+}
+```
+
+新プラグインを追加する際はこのファイルをテンプレートに `src/plugins/<id>.cpp` を作成し、
+`scan_and_select.py` で選択してから `meson setup --reconfigure build` を実行する。
+
+### 4.5 plugins.json スキーマ（ビルド選択リスト）
+
+`tools/scanner/scan_and_select.py` が `src/plugins/` をスキャンして生成する。
+**実行時には使用しない**（meson.build の入力のみ）。
 
 ```json
 [
   {
-    "id":        "GaussBlur",
-    "exe":       "plug-in-gauss.exe",
-    "procedure": "plug-in-gauss",
-    "menu":      "Filters/Blur/Gaussian Blur",
-    "blurb":     "Apply a gaussian blur",
-    "params": [
-      { "type": "INT32",    "name": "run-mode" },
-      { "type": "IMAGE",    "name": "image" },
-      { "type": "DRAWABLE", "name": "drawable" },
-      { "type": "INT32",    "name": "horizontal" },
-      { "type": "INT32",    "name": "vertical" },
-      { "type": "INT32",    "name": "method" }
-    ]
+    "id":  "PlugInCheckerboard",
+    "src": "src/plugins/checkerboard.cpp"
   }
 ]
 ```
 
 | フィールド | 内容 |
 |---|---|
-| `id` | DLL 名サフィックス兼 `GIMP_PLUGIN_ID`（ASCII、スペースなし） |
-| `exe` | GIMP プラグイン EXE のファイル名 |
-| `procedure` | GIMP プロシージャ名（`plug-in-gauss` 等） |
-| `menu` | CSP エフェクトメニューへの配置パス |
-| `blurb` | 説明文 |
-| `params` | パラメーター定義（`GP_PROC_INSTALL` から取得） |
+| `id`  | DLL 名サフィックス兼 `GIMP_PLUGIN_ID`（ASCII、スペースなし） |
+| `src` | `src/plugins/` 以下の相対パス（meson.build が `files()` に渡す） |
 
-`plugins.json` はリポジトリに含めてよい。再スキャンしたい場合のみスキャナーを再実行する。
+`plugins.json` はリポジトリに含めてよい。別プラグインを追加・除外したい場合は `scan_and_select.py` を再実行する。
 
-### 4.4 DLL 実装（実行時の self-identification）
+### 4.6 meson.build プラグインループ（変更後）
 
-```cpp
-// plugin_entry.cpp
-const std::string pluginId{ GIMP_PLUGIN_ID };   // ビルド時に確定
+`list_plugin_ids.py` は `id|src` 形式を出力する（旧 `id|exe|proc` から変更）。
 
-// plugins.json から自分の設定を取得
-auto config = FindPluginEntry(
-    GetThisDllDirectory() + "/plugins.json", pluginId);
-// → config.exe = "plug-in-gauss.exe"
-// → config.params = [...]
+```meson
+foreach entry : plugin_ids
+    fields     = entry.split('|')
+    plugin_id  = fields[0]   # 例: PlugInCheckerboard
+    plugin_src = fields[1]   # 例: src/plugins/checkerboard.cpp
+    if is_msvc
+        macro_id = '/DGIMP_PLUGIN_ID="' + plugin_id + '"'
+    else
+        macro_id = '-DGIMP_PLUGIN_ID="' + plugin_id + '"'
+    endif
+    shared_library(
+        'CSPBridgeGimp_' + plugin_id,
+        [files('src/csp/plugin_entry.cpp'), files(plugin_src)],
+        cpp_args:     [macro_id],           # GIMP_PLUGIN_EXE / PROC マクロは不要
+        dependencies: common_deps,
+        link_with:    core_lib,
+        include_directories: include_directories('extern/TriglavPlugInSDK'),
+        name_suffix:  'cpm',
+        install:      true,
+        install_dir:  csp_output_dir,
+    )
+endforeach
 ```
+
+### 4.7 CSPBridge との対応関係
+
+| CSPBridge | CSPBridgeGimp |
+|---|---|
+| `EFFECT_ID="Blur"` | `GIMP_PLUGIN_ID="GaussBlur"` |
+| `CSPBridgeEffects.dll`（C# 共通処理） | `src/csp/plugin_entry.cpp`（コア） |
+| `CSPBridgeBlur.dll` / `CSPBridgeHSV.dll` | `src/plugins/gauss_blur.cpp` / `src/plugins/unsharp.cpp` |
 
 ---
 
 ## 5. プラグインスキャナーツール（`tools/scanner/scan_and_select.py`）
 
+> **2026-05-03 役割変更**: 旧仕様（GIMP インストールをスキャンして `plugins.json` を生成）から
+> **ビルド選択ツール**（`src/plugins/` に実装済みのプラグインから選択して `plugins.json` を生成）に変更。
+> GIMP インストールのスキャン・探索は開発時専用ツール `tools/dev/discover_gimp_plugins.py` が担う。
+
 ### 5.1 役割と位置づけ
 
-`meson setup` の**前に手動で実行**する独立ツール。`plugins.json` が唯一の出力成果物であり、以降のビルドはこのファイルに依存する。
+`meson setup` の**前に手動で実行**する独立ツール。`plugins.json`（§4.5）が唯一の出力成果物であり、以降のビルドはこのファイルに依存する。
 
 ```
-① scan_and_select.py を実行（手動・1回）
+【通常ビルドフロー】
+① scan_and_select.py を実行（手動・プラグイン追減時のみ）
         ↓  plugins.json を保存
-② meson setup builddir
-③ meson compile -C builddir
-④ meson install -C builddir
+② meson setup --reconfigure build
+③ meson compile -C build
+④ meson install -C build
+
+【新プラグイン追加フロー】
+① tools/dev/discover_gimp_plugins.py で GIMP をスキャン（プロシージャ名・パラメーター確認）
+② src/plugins/<id>.cpp を実装（plugin_iface.h に従って3関数を実装）
+③ scan_and_select.py で新プラグインを選択 → plugins.json 更新
+④ meson setup --reconfigure build → compile → install
 ```
 
-### 5.2 処理フロー
+### 5.2 処理フロー（新仕様）
+
+```
+1. src/plugins/ を走査して *.cpp ファイルを列挙（plugin_iface.h を除く）
+2. 各ファイルから plugin_id を推定（ファイル名 → PascalCase 変換、または
+   `re` モジュールで `GetPluginInfo()` の return 文を静的テキストパース）
+3. tkinter チェックリストダイアログで一覧表示
+4. ユーザーがチェックを入れたプラグインのみ plugins.json に書き出す
+   （§4.5 形式: id + src パス）
+```
+
+### 5.2b 旧処理フロー（GIMP スキャン）→ `tools/dev/discover_gimp_plugins.py` に移管
 
 ```
 1. bridge_config.json から plugin_search_paths を読む
@@ -269,7 +430,7 @@ auto config = FindPluginEntry(
    a. 2 本の匿名パイプを作成（親 ↔ 子の双方向、継承可能 fd）
    b. 子プロセス起動:
       <exe> -gimp <protocol_version> <read_fd> <write_fd> -query 0
-      * protocol_version は 10 進文字列（GIMP 3.0 = 277 / 0x0115）
+      * protocol_version は 10 進文字列（GIMP 3.2 = 279 / 0x0117）
       * read_fd / write_fd は子から見た fd 番号（親が作った fd をそのまま継承）
       * 4 番目の引数が "-query" のとき、プラグインは GP_CONFIG を
         待たずにいきなり GP_PROC_INSTALL を書き始める
@@ -283,8 +444,7 @@ auto config = FindPluginEntry(
       - GP_HAS_INIT (=12) / GP_PROC_UNINSTALL (=10): 読み飛ばし
       - その他は未知メッセージとして当該 EXE のスキャンを中止
    d. EOF（プラグイン自身が exit）または timeout で終了
-4. tkinter チェックリストダイアログで一覧表示
-5. ユーザーがチェックを入れたプラグインのみ plugins.json に書き出し
+4. プロシージャ名・パラメーター定義を表示（開発者が src/plugins/ 実装の参考にする）
 ```
 
 ### 5.3 起動引数とメッセージ（GIMP 3.0 実装準拠）
