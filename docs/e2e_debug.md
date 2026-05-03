@@ -207,11 +207,79 @@ checkerboard が呼ぶ範囲では `gimp-progress-init` / `gimp-progress-update`
 
 ## 次にやること
 
-Phase-1 の standalone E2E は完了。次フェーズは:
+最終更新: 2026-05-04（コミット `5bd7028` 以降）
 
-1. CSP プラグイン本体（`MyGimpHost.dll`）への組込み
-2. CSP の画像バッファ → HostContext の RGBA バッファへの双方向同期
-3. CSP 上で実プラグインを呼び出すサンプル UI
+### ✅ 完了済み
 
-Phase-1 で得た知見は Wire Protocol / PDB スタブ / タイル転送のすべてに反映済みで、
-そのまま CSP 統合に流用できる。
+- Phase-1 standalone E2E（`test_checkerboard.exe`）完走
+- Phase-2 CSP 経由 E2E 動作（commit `a713660`）
+- 静的プラグイン層アーキテクチャ導入（commit `27327dd`）
+- **プラグイン層インターフェース完成（CSPBridge アライン版・commit `5bd7028`）**
+  - `plugin_iface.h/cpp` 4 関数 + `PluginInfo` メタデータ + `CreateAsciiString` ヘルパー
+  - `checkerboard.cpp` で `psychobilly` を Boolean UI 化、`SetupProperty` / `BuildFilterParams`
+    / `OnPropertyChanged` を SDK 直接呼び出しスタイルで実装
+  - `plugin_entry.cpp` のメタデータ・プロパティ生成・コールバック処理を全面プラグイン委譲化
+  - 既存テスト負債 2 件修正（`test_tile_transfer` PUT プロンプト全ゼロ、`test_wire_io` swap_path 実 path）
+
+### 🚩 次セッション最優先: プレビュー問題の解決
+
+`checkerboard` は `canPreview = false` のためスルーされているが、**`canPreview = true` 系プラグイン
+（gauss-blur, hsv 等の典型的フィルター）では現状の実装でプレビューが正しく動かない**懸念がある。
+PL レビュー（コミット `5bd7028`）で識別済みの課題:
+
+1. **`OnPropertyChanged` で `Modify` を返さないとプレビュー再描画がトリガーされない**
+   - CSPBridge `Blur.cs:157-159` / `HSV.cs:216-218` は `notify == NotifyValueChanged` のとき
+     `kTriglavPlugInPropertyCallBackResultModify` を返すパターン
+   - 本実装の `checkerboard.cpp::OnPropertyChanged` は常に `NoModify`
+   - Doxygen にこの注意は追記済み（`plugin_iface.h::OnPropertyChanged`）が、
+     プレビュー実装そのものは未検証
+
+2. **CSP の `FilterRunProcess` ステートマシン未対応**
+   - CSPBridge `EffectHelper.RunPreviewLoop` は `Start / Continue / End / Restart / Exit` の
+     ステート管理を行いつつブロック単位で処理
+   - 本実装の `plugin_entry.cpp::FilterRun` は `Start` を 1 回呼んだ後すぐに GIMP プロセスを
+     起動して全タイル転送 → `End` で終了する単発実行のみ
+   - プレビュー対応にはこのループを再設計し、Restart で `BuildFilterParams` を再呼出して
+     差分プレビューを生成する仕組みが必要
+
+3. **GIMP プロセス再起動コストの問題**
+   - プレビューでパラメーター変更のたびに GIMP プラグイン EXE を起動し直すと UX が悪い
+   - `PluginSession` 再利用の可否（`RunFilter()` は 1 セッション 1 回限り仕様）を見直すか、
+     プレビュー専用の軽量パスを設けるか要検討
+   - `wire_io.h::PluginSession` のドキュメントコメント: "RunFilter() は 1 セッションにつき
+     1 回のみ呼び出し可（内部 std::promise が 1 回限り）" — この前提を変える必要あり
+
+### 📋 次セッションのアプローチ（推奨）
+
+1. **CSPBridge `EffectHelper.RunPreviewLoop` を C++ で参考再構築**
+   - `E:/Projects/CSPBridge/CSPBridgeEffects/Effects/EffectHelper.cs:118` 以降を読む
+   - ステート管理を `plugin_entry.cpp::FilterRun` 内に移植
+2. **`PluginSession` 再利用設計の検討**
+   - 同一 GIMP プロセスに対して複数 `RunFilter()` を投げられるよう `std::promise` 仕様を変更
+   - またはプレビュー専用 fast-path（fewer GIMP roundtrips）
+3. **検証プラグイン**: 元々の C-1 候補だった `pixelize` か `hsv` を `canPreview = true` で実装し、
+   CSP UI でリアルタイムスライダー操作 → プレビュー反映 を確認
+
+### その他の積み残し（プレビュー後）
+
+- **C-1 (pixelize.cpp)**: 静的プラグイン層 2 本目の実証（int パラメーター 1 個のシンプル系）
+- **C-2 (gauss_blur.cpp)**: Decimal × 2 + Enumeration の検証。`propSvc2` 経由の Enumeration 実装を実機確認
+- **D (spec stale TODO 整理)**: `buffer.cpp:374` / `buffer.h:78,103` の `updateDestinationOffscreenRectProc` TODO 撤回（`plugin_entry.cpp:494` で既に呼ばれている）
+- **agent ファイル更新**: `.claude/agents/project-leader.md` に「variant + visit 案不採用 / SDK 直接呼び出し採用」の決裁前例を 1 行追記
+
+### 📂 別 PC で続行する手順
+
+```powershell
+git clone <repo>
+cd CSPBridgeGimp
+git pull
+# config/bridge_config.json の plugin_search_paths / gimp_lib_dir / csp_plugin_output_dir を環境に合わせて編集
+meson setup build
+& cmd /c '"<vcvars64.bat path>" >nul && meson compile -C build'
+
+# 標準 E2E（GIMP 3.2 が PATH に解決可能なら）
+.\build\test_checkerboard.exe
+
+# 次セッションの起点: docs/e2e_debug.md の本セクションを読む
+# プレビュー実装の参考: E:/Projects/CSPBridge/CSPBridgeEffects/Effects/EffectHelper.cs::RunPreviewLoop
+```
