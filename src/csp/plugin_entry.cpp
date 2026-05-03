@@ -16,12 +16,6 @@
 #ifndef GIMP_PLUGIN_ID
 #define GIMP_PLUGIN_ID ""
 #endif
-#ifndef GIMP_PLUGIN_EXE
-#define GIMP_PLUGIN_EXE ""
-#endif
-#ifndef GIMP_PLUGIN_PROC
-#define GIMP_PLUGIN_PROC ""
-#endif
 
 // ---------------------------------------------------------------------------
 // プラットフォームヘッダー
@@ -66,6 +60,7 @@
 #include "../config/config.h"
 #include "../host/pdb_stubs.h"
 #include "../ipc/wire_io.h"
+#include "../plugins/plugin_iface.h"
 
 // ---------------------------------------------------------------------------
 // Windows: DllMain で HMODULE を保存
@@ -338,28 +333,32 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                 &recSuite, hostObject, targets,
                 static_cast<TriglavPlugInInt>(std::size(targets)));
 
-            // プロパティ作成（check-size パラメーター）
+            // プロパティ作成（GetProperties() から動的生成）
             TriglavPlugInPropertyObject propObj = nullptr;
             propSvc->createProc(&propObj);
 
             if (propObj != nullptr)
             {
-                TriglavPlugInStringObject labelObj = nullptr;
-                strSvc->createWithAsciiStringProc(
-                    &labelObj, "Check Size",
-                    static_cast<TriglavPlugInInt>(std::strlen("Check Size")));
-                propSvc->addItemProc(
-                    propObj, 1,
-                    kTriglavPlugInPropertyValueTypeInteger,
-                    kTriglavPlugInPropertyValueKindDefault,
-                    kTriglavPlugInPropertyInputKindDefault,
-                    labelObj, '\0');
-                strSvc->releaseProc(labelObj);
+                const std::vector<PropItemDef> propDefs = GetProperties();
+                for (const auto& def : propDefs)
+                {
+                    TriglavPlugInStringObject labelObj = nullptr;
+                    strSvc->createWithAsciiStringProc(
+                        &labelObj, def.label.c_str(),
+                        static_cast<TriglavPlugInInt>(def.label.size()));
+                    propSvc->addItemProc(
+                        propObj, def.key,
+                        kTriglavPlugInPropertyValueTypeInteger,
+                        kTriglavPlugInPropertyValueKindDefault,
+                        kTriglavPlugInPropertyInputKindDefault,
+                        labelObj, '\0');
+                    strSvc->releaseProc(labelObj);
 
-                propSvc->setIntegerValueProc(propObj,        1, 10);
-                propSvc->setIntegerDefaultValueProc(propObj, 1, 10);
-                propSvc->setIntegerMinValueProc(propObj,     1, 1);
-                propSvc->setIntegerMaxValueProc(propObj,     1, 200);
+                    propSvc->setIntegerValueProc(propObj,        def.key, def.defaultVal);
+                    propSvc->setIntegerDefaultValueProc(propObj, def.key, def.defaultVal);
+                    propSvc->setIntegerMinValueProc(propObj,     def.key, def.minVal);
+                    propSvc->setIntegerMaxValueProc(propObj,     def.key, def.maxVal);
+                }
 
                 TriglavPlugInFilterInitializeSetProperty(
                     &recSuite, hostObject, propObj);
@@ -446,7 +445,8 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                 const std::string configPath = moduleDir + "/config/bridge_config.json";
                 const BridgeConfig cfg       = LoadConfig(configPath);
 
-                const std::string exePath = FindPluginExe(cfg, GIMP_PLUGIN_EXE);
+                const PluginInfo info     = GetPluginInfo();
+                const std::string exePath = FindPluginExe(cfg, info.exeName);
                 {
                     char buf[512];
                     std::snprintf(buf, sizeof(buf),
@@ -465,12 +465,12 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
 
                 // PluginSession を生成してフィルターを実行
                 {
-                    FilterParams params;
-                    params.procedureName = GIMP_PLUGIN_PROC;
-                    params.args = {
-                        GpParam{GpParamType::Int, "gboolean", "", 0,  0.0},  // psychobilly
-                        GpParam{GpParamType::Int, "gint",     "", 10, 0.0},  // check-size
-                    };
+                    TriglavPlugInPropertyObject propObj = nullptr;
+                    TriglavPlugInFilterRunGetProperty(&recSuite, &propObj, hostObject);
+
+                    BridgeData* bd = static_cast<BridgeData*>(*data);
+                    FilterParams params = BuildFilterParams(
+                        propObj, bd ? bd->pPropertyService : nullptr);
 
                     const std::string stderrLog = moduleDir + "/cspbridge_stderr.log";
                     PluginSession session(exePath, cfg.gimpLibDir, PluginMode::Run, &ctx, stderrLog);

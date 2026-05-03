@@ -205,24 +205,19 @@ else
         plugin_ids = raw_ids.split('\n')
         foreach entry : plugin_ids
             if entry != ''
-                # entry は "id|exe_base|procedure" 形式
-                fields = entry.split('|')
+                # entry は "id|src" 形式
+                fields     = entry.split('|')
                 plugin_id  = fields[0]   # 例: PlugInCheckerboard
-                exe_base   = fields[1]   # 例: checkerboard
-                procedure  = fields[2]   # 例: plug-in-checkerboard
+                plugin_src = fields[1]   # 例: src/plugins/checkerboard.cpp
                 if is_msvc
-                    macro_id   = '/DGIMP_PLUGIN_ID="'   + plugin_id + '"'
-                    macro_exe  = '/DGIMP_PLUGIN_EXE="'  + exe_base  + '"'
-                    macro_proc = '/DGIMP_PLUGIN_PROC="'  + procedure + '"'
+                    macro_id = '/DGIMP_PLUGIN_ID="' + plugin_id + '"'
                 else
-                    macro_id   = '-DGIMP_PLUGIN_ID="'   + plugin_id + '"'
-                    macro_exe  = '-DGIMP_PLUGIN_EXE="'  + exe_base  + '"'
-                    macro_proc = '-DGIMP_PLUGIN_PROC="'  + procedure + '"'
+                    macro_id = '-DGIMP_PLUGIN_ID="' + plugin_id + '"'
                 endif
                 lib = shared_library(
                     'CSPBridgeGimp_' + plugin_id,
-                    files('src/csp/plugin_entry.cpp'),
-                    cpp_args:     [macro_id, macro_exe, macro_proc],
+                    [files('src/csp/plugin_entry.cpp'), files(plugin_src)],
+                    cpp_args:     [macro_id],
                     dependencies: common_deps,
                     link_with:    core_lib,
                     include_directories: include_directories('extern/TriglavPlugInSDK'),
@@ -239,11 +234,6 @@ else
         install_data(
             'config/bridge_config.json',
             install_dir: csp_output_dir / 'config',
-        )
-        # plugins.json を .cpm と同ディレクトリに配置（FilterInitialize で GetModuleDir()+"/plugins.json" として読む）
-        install_data(
-            'plugins.json',
-            install_dir: csp_output_dir,
         )
     else
         warning('plugins.json にエントリがありません。' +

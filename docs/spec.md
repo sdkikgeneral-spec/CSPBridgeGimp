@@ -279,11 +279,6 @@ FilterParams params = BuildFilterParams(propObj, bd->pPropertyService);
 
 `GIMP_PLUGIN_EXE` / `GIMP_PLUGIN_PROC` マクロは廃止。`GIMP_PLUGIN_ID` のみ残す（CSP moduleId / filterName 用）。
 
-> **実装状況（2026-05-03 時点）**: 現在の `src/csp/plugin_entry.cpp` は未移行。
-> `GIMP_PLUGIN_EXE` / `GIMP_PLUGIN_PROC` マクロ参照とハードコード args（check-size=10 固定）
-> が残っている。これらの削除と `GetPluginInfo()` / `BuildFilterParams()` への置き換えは
-> 別途「実装フェーズ: plugin_entry.cpp 汎用化」ステップで実施する。
-
 ### 4.4 プラグイン実装例（`src/plugins/checkerboard.cpp`）
 
 ```cpp
@@ -311,7 +306,7 @@ FilterParams BuildFilterParams(
 {
     TriglavPlugInInt checkSize = 10;
     if (propObj && propSvc)
-        propSvc->getIntegerValueProc(propObj, 1, &checkSize);
+        propSvc->getIntegerValueProc(&checkSize, propObj, 1);
 
     FilterParams params;
     params.procedureName = "plug-in-checkerboard";
@@ -419,32 +414,6 @@ endforeach
 3. tkinter チェックリストダイアログで一覧表示
 4. ユーザーがチェックを入れたプラグインのみ plugins.json に書き出す
    （§4.5 形式: id + src パス）
-```
-
-### 5.2b 旧処理フロー（GIMP スキャン）→ `tools/dev/discover_gimp_plugins.py` に移管
-
-```
-1. bridge_config.json から plugin_search_paths を読む
-2. 各パスを走査して *.exe を列挙
-3. 各 EXE に対してクエリフェーズを実行：
-   a. 2 本の匿名パイプを作成（親 ↔ 子の双方向、継承可能 fd）
-   b. 子プロセス起動:
-      <exe> -gimp <protocol_version> <read_fd> <write_fd> -query 0
-      * protocol_version は 10 進文字列（GIMP 3.2 = 279 / 0x0117）
-      * read_fd / write_fd は子から見た fd 番号（親が作った fd をそのまま継承）
-      * 4 番目の引数が "-query" のとき、プラグインは GP_CONFIG を
-        待たずにいきなり GP_PROC_INSTALL を書き始める
-      * 最後の 0 は GIMP_STACK_TRACE_NEVER
-   c. 子からのメッセージを EOF までループ読み取り：
-      - GP_PROC_INSTALL (=9): プロシージャ名 / 引数定義などを収集
-      - GP_PROC_RUN (=5): プラグインからの PDB 呼び出し。
-        menu_label / blurb 等は GIMP 3.0 では GP_PROC_INSTALL に
-        含まれず、この PDB コールバックで送られてくる。
-        スキャナーは空の成功 GP_PROC_RETURN を返して進行させる
-      - GP_HAS_INIT (=12) / GP_PROC_UNINSTALL (=10): 読み飛ばし
-      - その他は未知メッセージとして当該 EXE のスキャンを中止
-   d. EOF（プラグイン自身が exit）または timeout で終了
-4. プロシージャ名・パラメーター定義を表示（開発者が src/plugins/ 実装の参考にする）
 ```
 
 ### 5.3 起動引数とメッセージ（GIMP 3.0 実装準拠）
