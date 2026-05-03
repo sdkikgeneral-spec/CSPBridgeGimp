@@ -150,25 +150,30 @@ std::string GetModuleDir()
 
 struct BridgeData
 {
-    TriglavPlugInPropertyService* pPropertyService = nullptr;
+    TriglavPlugInPropertyService*  pPropertyService  = nullptr;
+    TriglavPlugInPropertyService2* pPropertyService2 = nullptr;
 };
 
 // ===========================================================================
 // FilterPropertyCallBack — CSP がプロパティ変更を通知するコールバック
 //
-// サンプル（PIHSVMain.cpp）に倣い実関数を登録する。nullptr を渡すと
-// CSP がフィルターを有効化しない可能性がある。
-// PoC では値変更を検知するだけで再適用はしないため NoModify を返す。
+// 静的サンク。BridgeData から PropertyService v1/v2 を取り出し、
+// プラグイン層の OnPropertyChanged() に dispatch する。
+// プラグインが返した SDK Result 値をそのまま CSP に返却する。
 // ===========================================================================
 
 static void TRIGLAV_PLUGIN_CALLBACK FilterPropertyCallBack(
     TriglavPlugInInt*           result,
-    TriglavPlugInPropertyObject /*propertyObject*/,
-    const TriglavPlugInInt      /*itemKey*/,
-    const TriglavPlugInInt      /*notify*/,
-    TriglavPlugInPtr            /*data*/)
+    TriglavPlugInPropertyObject propObj,
+    const TriglavPlugInInt      itemKey,
+    const TriglavPlugInInt      notify,
+    TriglavPlugInPtr            data)
 {
-    *result = kTriglavPlugInPropertyCallBackResultNoModify;
+    BridgeData* bd = static_cast<BridgeData*>(data);
+    *result = OnPropertyChanged(
+        propObj, itemKey, notify,
+        bd ? bd->pPropertyService  : nullptr,
+        bd ? bd->pPropertyService2 : nullptr);
 }
 
 // ===========================================================================
@@ -278,17 +283,16 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
     // -----------------------------------------------------------------------
     // kTriglavPlugInSelectorFilterInitialize
     //
-    // サンプルに忠実に:
-    //   - 各 setXxx の戻り値は個別チェックしない（サンプルも同様）
-    //   - if-block の末尾で Success をセット
-    //   - PropertyCallBack には実関数を渡す
+    // GetPluginInfo() からメタデータを取得し、SetupProperty() に
+    // プロパティ UI 構築を委譲する（CSPBridge アライン版）。
     // -----------------------------------------------------------------------
     else if (selector == kTriglavPlugInSelectorFilterInitialize)
     {
         DbgLog("CSPBridge: FilterInitialize called\n");
 
-        TriglavPlugInStringService*   strSvc  = pluginServer->serviceSuite.stringService;
-        TriglavPlugInPropertyService* propSvc = pluginServer->serviceSuite.propertyService;
+        TriglavPlugInStringService*    strSvc   = pluginServer->serviceSuite.stringService;
+        TriglavPlugInPropertyService*  propSvc  = pluginServer->serviceSuite.propertyService;
+        TriglavPlugInPropertyService2* propSvc2 = pluginServer->serviceSuite.propertyService2;
         TriglavPlugInFilterInitializeRecord* fiRec = TriglavPlugInGetFilterInitializeRecord(&recSuite);
 
         if (fiRec != nullptr
@@ -298,72 +302,50 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             BridgeData* bd = static_cast<BridgeData*>(*data);
             if (bd != nullptr)
             {
-                bd->pPropertyService = propSvc;
+                bd->pPropertyService  = propSvc;
+                bd->pPropertyService2 = propSvc2;
             }
 
-            // カテゴリ名
+            const PluginInfo info = GetPluginInfo();
 
-            TriglavPlugInStringObject catNameObj = nullptr;
-            strSvc->createWithAsciiStringProc(
-                &catNameObj, "GIMP Bridge",
-                static_cast<TriglavPlugInInt>(std::strlen("GIMP Bridge")));
+            // カテゴリ名
+            TriglavPlugInStringObject catNameObj = CreateAsciiString(strSvc, info.category);
             TriglavPlugInFilterInitializeSetFilterCategoryName(
                 &recSuite, hostObject, catNameObj, '\0');
             strSvc->releaseProc(catNameObj);
 
-            // フィルター名（GIMP_PLUGIN_ID）
-            TriglavPlugInStringObject filterNameObj = nullptr;
-            strSvc->createWithAsciiStringProc(
-                &filterNameObj, GIMP_PLUGIN_ID,
-                static_cast<TriglavPlugInInt>(std::strlen(GIMP_PLUGIN_ID)));
+            // フィルター名（PluginInfo.displayName）
+            TriglavPlugInStringObject filterNameObj = CreateAsciiString(strSvc, info.displayName);
             TriglavPlugInFilterInitializeSetFilterName(
                 &recSuite, hostObject, filterNameObj, '\0');
             strSvc->releaseProc(filterNameObj);
 
             // プレビュー
             TriglavPlugInFilterInitializeSetCanPreview(
-                &recSuite, hostObject, kTriglavPlugInBoolFalse);
+                &recSuite, hostObject,
+                info.canPreview ? kTriglavPlugInBoolTrue : kTriglavPlugInBoolFalse);
 
-            // buffer.cpp がサポートするレイヤー種別のみ（RGBAlpha / GrayAlpha）
-            TriglavPlugInInt targets[] = {
-                kTriglavPlugInFilterTargetKindRasterLayerRGBAlpha,
-                kTriglavPlugInFilterTargetKindRasterLayerGrayAlpha,
-            };
-            TriglavPlugInFilterInitializeSetTargetKinds(
-                &recSuite, hostObject, targets,
-                static_cast<TriglavPlugInInt>(std::size(targets)));
+            // 対応カラーモード（PluginInfo.targetKinds）
+            std::vector<TriglavPlugInInt> targets(
+                info.targetKinds.begin(), info.targetKinds.end());
+            if (!targets.empty())
+            {
+                TriglavPlugInFilterInitializeSetTargetKinds(
+                    &recSuite, hostObject, targets.data(),
+                    static_cast<TriglavPlugInInt>(targets.size()));
+            }
 
-            // プロパティ作成（GetProperties() から動的生成）
+            // プロパティ UI はプラグイン層に委譲
             TriglavPlugInPropertyObject propObj = nullptr;
             propSvc->createProc(&propObj);
 
             if (propObj != nullptr)
             {
-                const std::vector<PropItemDef> propDefs = GetProperties();
-                for (const auto& def : propDefs)
-                {
-                    TriglavPlugInStringObject labelObj = nullptr;
-                    strSvc->createWithAsciiStringProc(
-                        &labelObj, def.label.c_str(),
-                        static_cast<TriglavPlugInInt>(def.label.size()));
-                    propSvc->addItemProc(
-                        propObj, def.key,
-                        kTriglavPlugInPropertyValueTypeInteger,
-                        kTriglavPlugInPropertyValueKindDefault,
-                        kTriglavPlugInPropertyInputKindDefault,
-                        labelObj, '\0');
-                    strSvc->releaseProc(labelObj);
-
-                    propSvc->setIntegerValueProc(propObj,        def.key, def.defaultVal);
-                    propSvc->setIntegerDefaultValueProc(propObj, def.key, def.defaultVal);
-                    propSvc->setIntegerMinValueProc(propObj,     def.key, def.minVal);
-                    propSvc->setIntegerMaxValueProc(propObj,     def.key, def.maxVal);
-                }
+                SetupProperty(propObj, strSvc, propSvc, propSvc2);
 
                 TriglavPlugInFilterInitializeSetProperty(
                     &recSuite, hostObject, propObj);
 
-                // 実関数ポインターを登録（nullptr は不可）
                 TriglavPlugInFilterInitializeSetPropertyCallBack(
                     &recSuite, hostObject,
                     FilterPropertyCallBack, *data);
@@ -371,7 +353,7 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                 propSvc->releaseProc(propObj);
             }
 
-            *result = kTriglavPlugInCallResultSuccess;   // 末尾でのみ Success
+            *result = kTriglavPlugInCallResultSuccess;
             DbgLog("CSPBridge: FilterInitialize SUCCESS\n");
         }
         else
@@ -470,7 +452,9 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
 
                     BridgeData* bd = static_cast<BridgeData*>(*data);
                     FilterParams params = BuildFilterParams(
-                        propObj, bd ? bd->pPropertyService : nullptr);
+                        propObj,
+                        bd ? bd->pPropertyService  : nullptr,
+                        bd ? bd->pPropertyService2 : nullptr);
 
                     const std::string stderrLog = moduleDir + "/cspbridge_stderr.log";
                     PluginSession session(exePath, cfg.gimpLibDir, PluginMode::Run, &ctx, stderrLog);

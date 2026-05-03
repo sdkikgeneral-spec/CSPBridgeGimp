@@ -1,34 +1,94 @@
 /**
  * @file   checkerboard.cpp
- * @brief  plug-in-checkerboard ブリッジ実装
+ * @brief  plug-in-checkerboard ブリッジ実装（CSPBridge アライン版）
  * @author CSPBridgeGimp
- * @date   2026-05-03
+ * @date   2026-05-04
+ *
+ * GIMP の checkerboard プラグインを CSP からブリッジ呼び出しする。
+ * パラメーター:
+ *   - psychobilly (gboolean) : サイケな配色モード
+ *   - check-size  (gint)     : チェック 1 マスのサイズ (px)
  */
+
 #include "plugin_iface.h"
+
+namespace
+{
+constexpr int ItemKeyPsychobilly = 1;
+constexpr int ItemKeyCheckSize   = 2;
+}
 
 PluginInfo GetPluginInfo()
 {
-    return {"checkerboard", "plug-in-checkerboard"};
+    return {
+        .exeName     = "checkerboard",
+        .procName    = "plug-in-checkerboard",
+        .displayName = "Checkerboard",
+        // category / canPreview / targetKinds は既定値を使用
+    };
 }
 
-std::vector<PropItemDef> GetProperties()
+void SetupProperty(
+    TriglavPlugInPropertyObject     propObj,
+    TriglavPlugInStringService*     strSvc,
+    TriglavPlugInPropertyService*   propSvc,
+    TriglavPlugInPropertyService2*  /*propSvc2*/)
 {
-    return {PropItemDef{1, "Check Size", 10, 1, 200}};
+    // Psychobilly (Boolean)
+    auto psyLabel = CreateAsciiString(strSvc, "Psychobilly");
+    propSvc->addItemProc(propObj, ItemKeyPsychobilly,
+        kTriglavPlugInPropertyValueTypeBoolean,
+        kTriglavPlugInPropertyValueKindDefault,
+        kTriglavPlugInPropertyInputKindDefault,
+        psyLabel, '\0');
+    propSvc->setBooleanValueProc(propObj, ItemKeyPsychobilly, kTriglavPlugInBoolFalse);
+    strSvc->releaseProc(psyLabel);
+
+    // Check Size (Integer slider)
+    auto szLabel = CreateAsciiString(strSvc, "Check Size");
+    propSvc->addItemProc(propObj, ItemKeyCheckSize,
+        kTriglavPlugInPropertyValueTypeInteger,
+        kTriglavPlugInPropertyValueKindDefault,
+        kTriglavPlugInPropertyInputKindDefault,
+        szLabel, '\0');
+    propSvc->setIntegerValueProc       (propObj, ItemKeyCheckSize, 10);
+    propSvc->setIntegerDefaultValueProc(propObj, ItemKeyCheckSize, 10);
+    propSvc->setIntegerMinValueProc    (propObj, ItemKeyCheckSize, 1);
+    propSvc->setIntegerMaxValueProc    (propObj, ItemKeyCheckSize, 200);
+    strSvc->releaseProc(szLabel);
 }
 
 FilterParams BuildFilterParams(
-    TriglavPlugInPropertyObject   propObj,
-    TriglavPlugInPropertyService* propSvc)
+    TriglavPlugInPropertyObject     propObj,
+    TriglavPlugInPropertyService*   propSvc,
+    TriglavPlugInPropertyService2*  /*propSvc2*/)
 {
-    TriglavPlugInInt checkSize = 10;
+    TriglavPlugInBool psy = kTriglavPlugInBoolFalse;
+    TriglavPlugInInt  sz  = 10;
+
     if (propObj && propSvc)
-        propSvc->getIntegerValueProc(&checkSize, propObj, 1);
+    {
+        propSvc->getBooleanValueProc(&psy, propObj, ItemKeyPsychobilly);
+        propSvc->getIntegerValueProc(&sz,  propObj, ItemKeyCheckSize);
+    }
 
     FilterParams params;
     params.procedureName = "plug-in-checkerboard";
     params.args = {
-        GpParam{GpParamType::Int, "gboolean", "", 0,              0.0},  // psychobilly
-        GpParam{GpParamType::Int, "gint",     "", (int)checkSize, 0.0},  // check-size
+        GpParam{GpParamType::Int, "gboolean", "",
+                psy != kTriglavPlugInBoolFalse ? 1 : 0, 0.0},  // psychobilly
+        GpParam{GpParamType::Int, "gint",     "",
+                static_cast<int>(sz), 0.0},                    // check-size
     };
     return params;
+}
+
+TriglavPlugInInt OnPropertyChanged(
+    TriglavPlugInPropertyObject     /*propObj*/,
+    TriglavPlugInInt                /*itemKey*/,
+    TriglavPlugInInt                /*notify*/,
+    TriglavPlugInPropertyService*   /*propSvc*/,
+    TriglavPlugInPropertyService2*  /*propSvc2*/)
+{
+    return kTriglavPlugInPropertyCallBackResultNoModify;
 }

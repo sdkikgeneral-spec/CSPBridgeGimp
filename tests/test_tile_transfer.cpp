@@ -361,12 +361,15 @@ TEST_CASE("HandleTileRequest PUT: writes pixel data to HostContext buffer", "[ti
     const uint32_t promptUseShm     = f.pluginChannel.ReadUint32();
     // プロンプトに pixel_data はない
 
+    // PUT プロンプトはホスト本体仕様 (gimpplugin-message.c:199-208) に従い全ゼロ:
+    // drawable_id=-1, tile_num=0, shadow=0, bpp=0, w=0, h=0, use_shm=0
+    // pixel_data なし (length = 0*0*0 = 0)。spec.md §10.1 / e2e_debug.md §解決済み 5 参照
     REQUIRE(promptDrawableId == 0xFFFFFFFFu);
     REQUIRE(promptTileNum    == 0u);
     REQUIRE(promptShadow     == 0u);
-    REQUIRE(promptBpp        == 4u);
-    REQUIRE(promptW          == 64u);
-    REQUIRE(promptH          == 64u);
+    REQUIRE(promptBpp        == 0u);
+    REQUIRE(promptW          == 0u);
+    REQUIRE(promptH          == 0u);
     REQUIRE(promptUseShm     == 0u);
 
     // プラグイン側: GP_TILE_DATA（既知ピクセルデータ）を送信

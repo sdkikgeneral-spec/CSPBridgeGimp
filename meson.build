@@ -163,6 +163,7 @@ all_src_candidates = [
     'src/ipc/process.cpp',
     'src/ipc/wire_io.cpp',
     'src/csp/buffer.cpp',
+    'src/plugins/plugin_iface.cpp',
 ]
 # plugin_entry.cpp は GIMP_PLUGIN_ID が DLL ごとに異なるため core_lib に含めず
 # 各 shared_library ターゲットで直接コンパイルする
@@ -272,6 +273,7 @@ all_test_candidates = [
     'tests/test_buffer.cpp',
     'tests/test_wire_io.cpp',
     'tests/test_concurrency.cpp',
+    'tests/test_plugin_iface.cpp',
 ]
 test_srcs = []
 foreach f : all_test_candidates
@@ -279,6 +281,13 @@ foreach f : all_test_candidates
         test_srcs += files(f)
     endif
 endforeach
+
+# test_plugin_iface は GetPluginInfo() の実装を必要とするため、
+# 検証対象として checkerboard.cpp を直接コンパイル単位に含める
+# （core_lib にはプラグイン固有 cpp を入れない方針のため、ここで個別追加）
+if fs.exists('tests/test_plugin_iface.cpp') and fs.exists('src/plugins/checkerboard.cpp')
+    test_srcs += files('src/plugins/checkerboard.cpp')
+endif
 
 if test_srcs.length() > 0
     test_deps = [catch2_dep, nlohmann_json_dep] + platform_deps

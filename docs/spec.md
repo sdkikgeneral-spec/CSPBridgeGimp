@@ -200,121 +200,175 @@ CSPBridgeGimp_Pixelize.cpm            ← pixelize.cpp をリンク（将来）
 | **プラグイン層（薄いラッパー）** | GIMP 固有の EXE 名・プロシージャ名・CSP UI 定義・args 組み立て | `src/plugins/<id>.cpp` |
 | **Wire Protocol / Tile** | GIMP プロセス起動・タイル送受信 | `src/ipc/`・`src/host/` |
 
-コアは `GetProperties()` / `BuildFilterParams()` を呼び出すだけで、GIMP プラグイン固有の
-知識を一切持たない。各 `src/plugins/*.cpp` がその知識をカプセル化する。
+コアは `GetPluginInfo()` でメタデータを取得し、`SetupProperty()` / `BuildFilterParams()` /
+`OnPropertyChanged()` をプラグインに委譲するだけで、SDK 型に対する dispatch ロジックを持たない。
+各 `src/plugins/*.cpp` がその知識をカプセル化する。
 
-### 4.3 plugin_iface.h — プラグイン層インターフェース
+### 4.3 plugin_iface.h — プラグイン層インターフェース（CSPBridge アライン版）
 
-各 `src/plugins/*.cpp` は以下の 3 つの自由関数をリンク時に提供する（仮想関数不要・1 DLL に 1 プラグイン）。
+> **2026-05-04 方針確定**: variant + visit による中央 dispatch 案は廃止し、
+> CSPBridge `Effects/Samples/Blur.cs` `HSV.cs` の流儀に合わせて
+> **各プラグインが SDK を直接呼ぶ**設計に変更。理由:
+>   - core が SDK 型ごとの dispatch を持たないことで一段シンプル
+>   - 新型（Decimal / Boolean / Enumeration / String / Point 等）を追加するときに
+>     core を触らずプラグイン側だけで完結
+>   - C# 版 CSPBridge と完全にアラインしているため共通理解しやすい
+
+各 `src/plugins/*.cpp` は以下の **4 つの自由関数**をリンク時に提供する（仮想関数不要・1 DLL に 1 プラグイン）。
 
 ヘッダー: **`src/plugins/plugin_iface.h`**
 
 ```cpp
 /**
  * @file   plugin_iface.h
- * @brief  プラグイン層インターフェース定義
+ * @brief  プラグイン層インターフェース定義（CSPBridge アライン版）
  * @author CSPBridgeGimp
- * @date   2026-05-03
+ * @date   2026-05-04
  */
 #pragma once
 #include <string>
 #include <vector>
 #include "../ipc/wire_io.h"   // FilterParams, GpParam
-#include "TriglavPlugInSDK.h"
+#include "TriglavPlugInDefine.h"
+#include "TriglavPlugInService.h"
 
-/// @brief GIMP プラグイン実行情報
+/// @brief プラグイン基本情報（メタデータ）
 struct PluginInfo
 {
-    std::string exeName;   ///< EXE ファイル名（拡張子なし。例: "checkerboard"）
-    std::string procName;  ///< プロシージャ名（例: "plug-in-checkerboard"）
+    std::string exeName;        ///< GIMP プラグイン EXE 名（拡張子なし）
+    std::string procName;       ///< GIMP プロシージャ名
+    std::string displayName;    ///< CSP UI フィルター表示名
+    std::string category = "GIMP Bridge"; ///< CSP UI カテゴリ
+    bool        canPreview = false;
+    /// 対応カラーモード。既定: RGBA + GrayAlpha （buffer.cpp 対応範囲）
+    std::vector<int> targetKinds = {
+        kTriglavPlugInFilterTargetKindRasterLayerRGBAlpha,
+        kTriglavPlugInFilterTargetKindRasterLayerGrayAlpha,
+    };
 };
 
-/// @brief CSP プロパティ UI 整数スライダー定義
-struct PropItemDef
-{
-    int         key;         ///< 1-based キー（addItemProc に渡す値）
-    std::string label;       ///< UI 表示ラベル
-    int         defaultVal;  ///< デフォルト値
-    int         minVal;      ///< 最小値
-    int         maxVal;      ///< 最大値
-};
-
-/** @brief プラグインの EXE 名・プロシージャ名を返す */
+/// @brief プラグイン基本情報を返す
 PluginInfo GetPluginInfo();
 
-/**
- * @brief  CSP プロパティ UI に表示するスライダー定義一覧を返す
- * @return PropItemDef のリスト。空の場合は UI なし
- */
-std::vector<PropItemDef> GetProperties();
+/// @brief FilterInitialize 時にプロパティ UI を SDK 直接呼び出しで構築する
+/// プラグインが addItemProc / setIntegerValueProc 等を直接呼ぶ
+/// （CSPBridge Blur.cs::FilterInitialize と同パターン）
+/// PropertyService2 は Enumeration / String 用。NULL の可能性ありで分岐は呼び出し側の責務
+void SetupProperty(
+    TriglavPlugInPropertyObject     propObj,
+    TriglavPlugInStringService*     strSvc,
+    TriglavPlugInPropertyService*   propSvc,
+    TriglavPlugInPropertyService2*  propSvc2);
 
-/**
- * @brief  CSP プロパティ現在値から GIMP FilterParams を組み立てる
- * @param  propObj  FilterRun 時に TriglavPlugInFilterRunGetProperty で取得した propObj
- * @param  propSvc  PropertyService ポインタ（getIntegerValueProc で値を読む）
- * @return GIMP PluginSession に渡す FilterParams
- */
+/// @brief FilterRun 時に CSP プロパティ値から GIMP wire パラメーターを組み立てる
 FilterParams BuildFilterParams(
-    TriglavPlugInPropertyObject   propObj,
-    TriglavPlugInPropertyService* propSvc);
+    TriglavPlugInPropertyObject     propObj,
+    TriglavPlugInPropertyService*   propSvc,
+    TriglavPlugInPropertyService2*  propSvc2);
+
+/// @brief プロパティ変更通知のフック
+/// 戻り値は kTriglavPlugInPropertyCallBackResultNoModify / Modify / Invalid
+/// 多くの PoC フィルターは NoModify 固定で十分
+TriglavPlugInInt OnPropertyChanged(
+    TriglavPlugInPropertyObject     propObj,
+    TriglavPlugInInt                itemKey,
+    TriglavPlugInInt                notify,
+    TriglavPlugInPropertyService*   propSvc,
+    TriglavPlugInPropertyService2*  propSvc2);
+
+/// @brief ASCII 文字列から TriglavPlugInStringObject を生成（共通ヘルパー）
+/// 使用後に strSvc->releaseProc が必須
+TriglavPlugInStringObject CreateAsciiString(
+    TriglavPlugInStringService* strSvc, const std::string& text);
 ```
 
-#### plugin_entry.cpp の汎用化
+#### plugin_entry.cpp の役割
 
-`FilterInitialize` は `GetProperties()` の返値でプロパティ UI を動的生成する（コンパイル時確定データ）。
-`FilterRun` は `GetPluginInfo()` で EXE/プロシージャ名を取得し、`BuildFilterParams()` で args を組み立てる。
+`FilterInitialize` セレクター:
+1. `GetPluginInfo()` でメタデータを取得し、CSP の Category / FilterName / CanPreview / TargetKinds を設定
+2. `propSvc->createProc(&propObj)` でプロパティオブジェクトを確保
+3. `SetupProperty(propObj, strSvc, propSvc, propSvc2)` をプラグインに委譲（UI 構築）
+4. `setProperty` / `setPropertyCallBack` を実行
 
-```cpp
-// FilterRun 内（plugin_entry.cpp）— recSuite / hostObject / bd は既存変数
-const PluginInfo info     = GetPluginInfo();
-const std::string exePath = FindPluginExe(cfg, info.exeName);
+`FilterPropertyCallBack` 静的サンク:
+- `BridgeData` から PropertyService v1/v2 を取り出し、`OnPropertyChanged()` の戻り値を
+  そのまま CSP に返す
 
-// CSP から現在のプロパティ値を取得（TriglavPlugInRecordFunction.h マクロ）
-TriglavPlugInPropertyObject propObj = nullptr;
-TriglavPlugInFilterRunGetProperty(&recSuite, &propObj, hostObject);
+`FilterRun` セレクター:
+- `BuildFilterParams(propObj, propSvc, propSvc2)` でプラグインに wire 引数組立を委譲
+- 残りはタイル転送・GIMP プロセス起動・書き戻しの共通ロジック
 
-FilterParams params = BuildFilterParams(propObj, bd->pPropertyService);
-// params.procedureName は BuildFilterParams 内で設定
-```
+`GIMP_PLUGIN_EXE` / `GIMP_PLUGIN_PROC` マクロは廃止。`GIMP_PLUGIN_ID` のみ残す（CSP moduleId 用）。
 
-`GIMP_PLUGIN_EXE` / `GIMP_PLUGIN_PROC` マクロは廃止。`GIMP_PLUGIN_ID` のみ残す（CSP moduleId / filterName 用）。
+#### SDK 型ごとのセッター早見表
+
+| 型 | addItemProc 値型 | service 層 | 値セット | Min/Max/Default |
+|---|---|---|---|---|
+| Boolean   | `Boolean (0x01)`     | v1 | `setBooleanValueProc`     | なし（値のみ） |
+| Integer   | `Integer (0x11)`     | v1 | `setIntegerValueProc`     | `setInteger{Default,Min,Max}ValueProc` |
+| Decimal   | `Decimal (0x12)`     | v1 | `setDecimalValueProc`     | `setDecimal{Default,Min,Max}ValueProc` |
+| Enumeration | `Enumeration (0x02)` | **v2** | `setEnumerationValueProc` | `addEnumerationItemProc` で各選択肢追加 |
+| String    | `String (0x31)`      | **v2** | `setStringValueProc`      | `setStringDefaultValueProc` / `setStringMaxLengthProc` |
 
 ### 4.4 プラグイン実装例（`src/plugins/checkerboard.cpp`）
 
 ```cpp
-/**
- * @file   checkerboard.cpp
- * @brief  plug-in-checkerboard ブリッジ実装
- * @author CSPBridgeGimp
- * @date   2026-05-03
- */
 #include "plugin_iface.h"
+
+namespace { constexpr int ItemKeyPsychobilly = 1; constexpr int ItemKeyCheckSize = 2; }
 
 PluginInfo GetPluginInfo()
 {
-    return {"checkerboard", "plug-in-checkerboard"};
+    return {
+        .exeName     = "checkerboard",
+        .procName    = "plug-in-checkerboard",
+        .displayName = "Checkerboard",
+    };
 }
 
-std::vector<PropItemDef> GetProperties()
+void SetupProperty(propObj, strSvc, propSvc, /*propSvc2*/)
 {
-    return {PropItemDef{1, "Check Size", 10, 1, 200}};
+    // psychobilly (Boolean)
+    auto psyLabel = CreateAsciiString(strSvc, "Psychobilly");
+    propSvc->addItemProc(propObj, ItemKeyPsychobilly,
+        kTriglavPlugInPropertyValueTypeBoolean,
+        kTriglavPlugInPropertyValueKindDefault,
+        kTriglavPlugInPropertyInputKindDefault,
+        psyLabel, '\0');
+    propSvc->setBooleanValueProc(propObj, ItemKeyPsychobilly, kTriglavPlugInBoolFalse);
+    strSvc->releaseProc(psyLabel);
+
+    // Check Size (Integer slider)
+    auto szLabel = CreateAsciiString(strSvc, "Check Size");
+    propSvc->addItemProc(propObj, ItemKeyCheckSize,
+        kTriglavPlugInPropertyValueTypeInteger, ...,
+        szLabel, '\0');
+    propSvc->setIntegerValueProc       (propObj, ItemKeyCheckSize, 10);
+    propSvc->setIntegerDefaultValueProc(propObj, ItemKeyCheckSize, 10);
+    propSvc->setIntegerMinValueProc    (propObj, ItemKeyCheckSize, 1);
+    propSvc->setIntegerMaxValueProc    (propObj, ItemKeyCheckSize, 200);
+    strSvc->releaseProc(szLabel);
 }
 
-FilterParams BuildFilterParams(
-    TriglavPlugInPropertyObject   propObj,
-    TriglavPlugInPropertyService* propSvc)
+FilterParams BuildFilterParams(propObj, propSvc, /*propSvc2*/)
 {
-    TriglavPlugInInt checkSize = 10;
-    if (propObj && propSvc)
-        propSvc->getIntegerValueProc(&checkSize, propObj, 1);
+    TriglavPlugInBool psy = kTriglavPlugInBoolFalse;
+    propSvc->getBooleanValueProc(&psy, propObj, ItemKeyPsychobilly);
+    TriglavPlugInInt sz = 10;
+    propSvc->getIntegerValueProc(&sz, propObj, ItemKeyCheckSize);
 
     FilterParams params;
     params.procedureName = "plug-in-checkerboard";
     params.args = {
-        GpParam{GpParamType::Int, "gboolean", "", 0,              0.0},  // psychobilly
-        GpParam{GpParamType::Int, "gint",     "", (int)checkSize, 0.0},  // check-size
+        GpParam{GpParamType::Int, "gboolean", "", psy ? 1 : 0,        0.0},
+        GpParam{GpParamType::Int, "gint",     "", static_cast<int>(sz), 0.0},
     };
     return params;
+}
+
+TriglavPlugInInt OnPropertyChanged(...)
+{
+    return kTriglavPlugInPropertyCallBackResultNoModify;
 }
 ```
 

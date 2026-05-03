@@ -463,7 +463,11 @@ TEST_CASE("WireChannel: WriteConfig writes GIMP 3.2 GPConfig payload", "[wire_io
     REQUIRE(ch.ReadInt64() == static_cast<int64_t>(128) * 1024 * 1024);
 
     // [10] swap_path / swap_compression (string)
-    REQUIRE(ch.ReadString().empty());
+    // swap_path は実在パスでなければならない (gimp_file_new_for_config_path NULL deref 回避)。
+    // spec.md §8 / wire_io.cpp 参照。"\\cspbridge-gimp-swap" サフィックスで判定する。
+    const std::string swapPath = ch.ReadString();
+    REQUIRE_FALSE(swapPath.empty());
+    REQUIRE(swapPath.find("cspbridge-gimp-swap") != std::string::npos);
     REQUIRE(ch.ReadString() == "none");
 
     // [11] num_processors (int32)
