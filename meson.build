@@ -240,6 +240,11 @@ else
             'config/bridge_config.json',
             install_dir: csp_output_dir / 'config',
         )
+        # plugins.json を .cpm と同ディレクトリに配置（FilterInitialize で GetModuleDir()+"/plugins.json" として読む）
+        install_data(
+            'plugins.json',
+            install_dir: csp_output_dir,
+        )
     else
         warning('plugins.json にエントリがありません。' +
                 'tools/scanner/scan_and_select.py でプラグインを選択してください。')
