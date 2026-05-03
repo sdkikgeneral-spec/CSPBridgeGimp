@@ -10,7 +10,6 @@
 
 #include "pdb_stubs.h"
 
-#include <cstdio>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -222,12 +221,6 @@ void HostContext::Dispatch(const GpProcRunMsg& msg, WireChannel& channel) const
     std::shared_lock lock(m_mutex);
 
     const std::string& name = msg.name;
-
-    {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf), "CSPBridge: PDB Dispatch '%s'\n", name.c_str());
-        Log(buf);
-    }
 
     // --- image 系 ---
     if (name == "gimp-image-list" || name == "gimp_image_list")

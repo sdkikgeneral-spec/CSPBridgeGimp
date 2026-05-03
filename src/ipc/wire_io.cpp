@@ -1026,15 +1026,6 @@ void PluginSession::WorkerRunLoop(std::stop_token stopToken)
                 break; // EOF: プラグインが終了
             }
 
-            // 受信メッセージタイプをログ出力（診断用）
-            if (m_hostContext)
-            {
-                char dbgBuf[64];
-                std::snprintf(dbgBuf, sizeof(dbgBuf),
-                    "CSPBridge: RunLoop recv msgType=%u\n", msgType);
-                m_hostContext->Log(dbgBuf);
-            }
-
             switch (static_cast<GpMessageType>(msgType))
             {
             case GpMessageType::ProcRun:

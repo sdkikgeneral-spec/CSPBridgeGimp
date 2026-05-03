@@ -313,12 +313,13 @@ static void WriteCheckerboardRun(WireChannel& ch)
 // Message loop
 // ---------------------------------------------------------------------------
 
-static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
+static int RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
 {
     constexpr int POLL_INTERVAL_MS = 200;
     constexpr int MAX_NO_DATA      = 20; // 20 * 200ms = 4s
 
     int noDataCount = 0;
+    int tileCount   = 0;
 
     while (IsAlive(proc))
     {
@@ -398,8 +399,7 @@ static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
 
             case GpMessageType::TileReq:
                 HandleTileRequest(ch, ctx);
-                printf("    TileGET=%d TilePUT=%d\n",
-                    g_tileGetCount.load(), g_tilePutCount.load());
+                ++tileCount;
                 break;
 
             case GpMessageType::ProcReturn:
@@ -419,16 +419,16 @@ static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
                         printf("    [%zu] paramType=%u\n", i, static_cast<uint32_t>(p.paramType));
                 }
                 printf("    -> filter complete\n");
-                return;
+                return tileCount;
             }
 
             case GpMessageType::Quit:
                 printf("    -> plugin done\n");
-                return;
+                return tileCount;
 
             default:
                 printf("    -> unparseable, stopping loop\n");
-                return;
+                return tileCount;
             }
         }
         catch (const WireError& e)
@@ -440,6 +440,7 @@ static void RunMsgLoop(WireChannel& ch, PluginProcess& proc, HostContext& ctx)
 
     if (!IsAlive(proc))
         printf("  [loop] plugin died\n");
+    return tileCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -555,8 +556,6 @@ int main()
     // -----------------------------------------------------------------------
     HostContext ctx(200u, 200u); // small test image, all zeros (transparent)
     ctx.SetLogCallback([](const char* msg) { printf("    [pdb] %s", msg); });
-    g_tileGetCount.store(0);
-    g_tilePutCount.store(0);
 
     printf("[send] GP_PROC_RUN plug-in-checkerboard (5 params)\n");
     printf("  [0] Int     GimpRunMode  = 1 (NONINTERACTIVE)\n");
@@ -579,10 +578,9 @@ int main()
     //            The loop itself checks alive after each no-data poll interval.
     // -----------------------------------------------------------------------
     printf("[loop] Entering message loop immediately after GP_PROC_RUN...\n");
-    RunMsgLoop(ch, proc, ctx);
+    const int tileCount = RunMsgLoop(ch, proc, ctx);
 
-    printf("\n[stats] TileGET=%d TilePUT=%d\n",
-        g_tileGetCount.load(), g_tilePutCount.load());
+    printf("\n[stats] Tiles=%d\n", tileCount);
 
     // -----------------------------------------------------------------------
     // Step 9.5: dump host RGBA buffer as PPM for visual inspection
