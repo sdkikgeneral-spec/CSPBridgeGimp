@@ -463,6 +463,38 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                 TriglavPlugInFilterRunGetSelectAreaRect(
                     &recSuite, &selectRect, hostObject);
 
+                {
+                    char buf[256];
+                    std::snprintf(buf, sizeof(buf),
+                        "CSPBridge: FilterRun src=%p dst=%p rect=(%d,%d,%d,%d)\n",
+                        static_cast<void*>(srcOffscreen),
+                        static_cast<void*>(dstOffscreen),
+                        selectRect.left, selectRect.top,
+                        selectRect.right, selectRect.bottom);
+                    DbgLog(buf);
+                }
+
+                if (srcOffscreen == nullptr || dstOffscreen == nullptr)
+                {
+                    DbgLog("CSPBridge: FilterRun offscreen null -> skip\n");
+                    TriglavPlugInFilterRunProcess(
+                        &recSuite, &processResult,
+                        hostObject, kTriglavPlugInFilterRunProcessStateEnd);
+                    *result = kTriglavPlugInCallResultSuccess;
+                    return;
+                }
+
+                if (selectRect.right <= selectRect.left ||
+                    selectRect.bottom <= selectRect.top)
+                {
+                    DbgLog("CSPBridge: FilterRun selectRect empty -> skip\n");
+                    TriglavPlugInFilterRunProcess(
+                        &recSuite, &processResult,
+                        hostObject, kTriglavPlugInFilterRunProcessStateEnd);
+                    *result = kTriglavPlugInCallResultSuccess;
+                    return;
+                }
+
                 // CSP バッファ → RGBA 変換
                 CspBridge::CspBuffer cspBuf =
                     CspBridge::ReadFromOffscreen(offSvc, srcOffscreen, selectRect);

@@ -24,7 +24,7 @@ PluginInfo GetPluginInfo()
         .exeName     = "checkerboard",
         .procName    = "plug-in-checkerboard",
         .displayName = "Checkerboard",
-        // category / canPreview / targetKinds は既定値を使用
+        .canPreview  = true,
     };
 }
 
@@ -86,9 +86,11 @@ FilterParams BuildFilterParams(
 TriglavPlugInInt OnPropertyChanged(
     TriglavPlugInPropertyObject     /*propObj*/,
     TriglavPlugInInt                /*itemKey*/,
-    TriglavPlugInInt                /*notify*/,
+    TriglavPlugInInt                notify,
     TriglavPlugInPropertyService*   /*propSvc*/,
     TriglavPlugInPropertyService2*  /*propSvc2*/)
 {
-    return kTriglavPlugInPropertyCallBackResultNoModify;
+    return (notify == kTriglavPlugInPropertyCallBackNotifyValueChanged)
+        ? kTriglavPlugInPropertyCallBackResultModify
+        : kTriglavPlugInPropertyCallBackResultNoModify;
 }
