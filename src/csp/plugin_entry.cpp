@@ -33,6 +33,8 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <signal.h>
+#include <sys/types.h>
 #endif
 
 // ---------------------------------------------------------------------------
@@ -152,7 +154,53 @@ struct BridgeData
 {
     TriglavPlugInPropertyService*  pPropertyService  = nullptr;
     TriglavPlugInPropertyService2* pPropertyService2 = nullptr;
+#ifdef _WIN32
+    HANDLE hPlugin = nullptr;  ///< DuplicateHandle で複製した子プロセスハンドル
+#else
+    pid_t  pidPlugin = 0;      ///< 子プロセス PID
+#endif
 };
+
+// ===========================================================================
+// KillPluginHandle — BridgeData に保存したハンドル / PID でプロセスを kill する
+// ===========================================================================
+
+static void KillPluginHandle(BridgeData* bd)
+{
+    if (!bd) return;
+#ifdef _WIN32
+    if (bd->hPlugin)
+    {
+        DWORD exitCode = 0;
+        if (::GetExitCodeProcess(bd->hPlugin, &exitCode)
+            && exitCode == STILL_ACTIVE)
+        {
+            DbgLog("CSPBridge: KillPluginHandle: process still alive, killing\n");
+            ::TerminateProcess(bd->hPlugin, 1);
+        }
+        ::CloseHandle(bd->hPlugin);
+        bd->hPlugin = nullptr;
+    }
+    else
+    {
+        DbgLog("CSPBridge: KillPluginHandle: no handle (already cleaned up)\n");
+    }
+#else
+    if (bd->pidPlugin > 0)
+    {
+        if (::kill(bd->pidPlugin, 0) == 0)
+        {
+            DbgLog("CSPBridge: KillPluginHandle: process still alive, killing\n");
+            ::kill(bd->pidPlugin, SIGTERM);
+        }
+        bd->pidPlugin = 0;
+    }
+    else
+    {
+        DbgLog("CSPBridge: KillPluginHandle: no PID (already cleaned up)\n");
+    }
+#endif
+}
 
 // ===========================================================================
 // FilterPropertyCallBack — CSP がプロパティ変更を通知するコールバック
@@ -274,10 +322,13 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
     // -----------------------------------------------------------------------
     else if (selector == kTriglavPlugInSelectorModuleTerminate)
     {
+        DbgLog("CSPBridge: ModuleTerminate called\n");
         BridgeData* bd = static_cast<BridgeData*>(*data);
+        KillPluginHandle(bd);
         delete bd;
         *data   = nullptr;
         *result = kTriglavPlugInCallResultSuccess;
+        DbgLog("CSPBridge: ModuleTerminate SUCCESS\n");
     }
 
     // -----------------------------------------------------------------------
@@ -367,7 +418,10 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
     // -----------------------------------------------------------------------
     else if (selector == kTriglavPlugInSelectorFilterTerminate)
     {
+        DbgLog("CSPBridge: FilterTerminate called\n");
+        KillPluginHandle(static_cast<BridgeData*>(*data));
         *result = kTriglavPlugInCallResultSuccess;
+        DbgLog("CSPBridge: FilterTerminate SUCCESS\n");
     }
 
     // -----------------------------------------------------------------------
@@ -458,7 +512,30 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
 
                     const std::string stderrLog = moduleDir + "/cspbridge_stderr.log";
                     PluginSession session(exePath, cfg.gimpLibDir, PluginMode::Run, &ctx, stderrLog);
+
+#ifdef _WIN32
+                    if (bd)
+                    {
+                        ::DuplicateHandle(
+                            ::GetCurrentProcess(), session.GetProcessHandle(),
+                            ::GetCurrentProcess(), &bd->hPlugin,
+                            PROCESS_TERMINATE, FALSE, 0);
+                    }
+#else
+                    if (bd) bd->pidPlugin = session.GetPid();
+#endif
+
                     session.RunFilter(params).get();
+
+#ifdef _WIN32
+                    if (bd && bd->hPlugin)
+                    {
+                        ::CloseHandle(bd->hPlugin);
+                        bd->hPlugin = nullptr;
+                    }
+#else
+                    if (bd) bd->pidPlugin = 0;
+#endif
                 }
 
                 // 処理済み RGBA を読み出す
@@ -488,6 +565,16 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             }
             catch (const std::exception& ex)
             {
+                BridgeData* bdEx = static_cast<BridgeData*>(*data);
+#ifdef _WIN32
+                if (bdEx && bdEx->hPlugin)
+                {
+                    ::CloseHandle(bdEx->hPlugin);
+                    bdEx->hPlugin = nullptr;
+                }
+#else
+                if (bdEx) bdEx->pidPlugin = 0;
+#endif
                 char buf[512];
                 std::snprintf(buf, sizeof(buf),
                     "CSPBridge: FilterRun EXCEPTION: %s\n", ex.what());
@@ -495,6 +582,16 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             }
             catch (...)
             {
+                BridgeData* bdEx = static_cast<BridgeData*>(*data);
+#ifdef _WIN32
+                if (bdEx && bdEx->hPlugin)
+                {
+                    ::CloseHandle(bdEx->hPlugin);
+                    bdEx->hPlugin = nullptr;
+                }
+#else
+                if (bdEx) bdEx->pidPlugin = 0;
+#endif
                 DbgLog("CSPBridge: FilterRun UNKNOWN EXCEPTION\n");
             }
         }

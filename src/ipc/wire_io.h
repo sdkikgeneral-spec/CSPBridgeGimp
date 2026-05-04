@@ -399,6 +399,19 @@ public:
     /** @brief  デストラクター。worker スレッドを停止し fd・プロセスを解放する */
     ~PluginSession();
 
+#ifdef _WIN32
+    /**
+     * @brief  子プロセスの Windows HANDLE を返す（BridgeData への保存用）。
+     *         CloseHandle は呼ばないこと。所有権は PluginSession が持つ。
+     */
+    HANDLE GetProcessHandle() const { return m_proc.m_hProcess; }
+#else
+    /**
+     * @brief  子プロセスの PID を返す（BridgeData への保存用）。
+     */
+    pid_t GetPid() const { return m_proc.m_pid; }
+#endif
+
     PluginSession(const PluginSession&)            = delete;
     PluginSession& operator=(const PluginSession&) = delete;
 
