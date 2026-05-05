@@ -92,9 +92,9 @@ void SetupProperty(
  * を返す。`procedureName` と `args` をすべて埋めること。
  *
  * **呼び出し可能なコンテキスト**: FilterInitialize（`createProc` で生成した propObj）
- * および FilterPropertyCallBack（`inFilterRun = false` のとき）のみ。
+ * および FilterPropertyCallBack（propObj はコールバック引数として CSP から渡される）。
  * FilterRun 内で `TriglavPlugInFilterRunGetProperty` が返した propObj に対して
- * 呼ぶと CSP SDK 内部で SEH 例外が発生してプロセスがクラッシュする。
+ * 呼ぶと CSP SDK 内部で SEH 例外が発生してプロセスがクラッシュする（禁止）。
  *
  * @param  propObj   プラグインが createProc で生成、または callback で受け取った propObj
  * @param  propSvc   PropertyService v1
@@ -119,12 +119,9 @@ FilterParams BuildFilterParams(
  *       kTriglavPlugInPropertyCallBackNotifyValueChanged` のときに `Modify` を
  *       返してプレビュー再描画をトリガーできる（CSPBridge `Blur.cs::PropertyCallback`
  *       および `HSV.cs::PropertyCallback` 参照）。
- *       **ただし PoC 実機検証（2026-05）にて、`canPreview = true` + `Modify` の
- *       組み合わせが `TriglavPlugInFilterRunGetProperty` のデッドロックを引き起こす
- *       ことが確認された。真因は未解明（CSP SDK が FilterRun コールスタック上で
- *       PropertyCallBack を同期呼び出しし、`Modify` 受信時に CSP 内部ロックが
- *       デッドロックする可能性がある）。プレビュー対応フェーズ（将来）まで
- *       `canPreview = false` / `NoModify` 固定を強く推奨する。**
+ *       FilterRun は SDK 仕様通り while ループで `ProcessStateEnd` を送り、
+ *       `Restart` シグナルを受けて再計算する。PropertyCallBack 内での
+ *       `propSvc->getXxxValueProc` 呼び出しは公式 SDK ドキュメントで明示されており安全。
  *
  * @param  propObj   現在のプロパティオブジェクト
  * @param  itemKey   通知対象のアイテムキー

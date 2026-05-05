@@ -24,7 +24,7 @@ PluginInfo GetPluginInfo()
         .exeName     = "checkerboard",
         .procName    = "plug-in-checkerboard",
         .displayName = "Checkerboard",
-        .canPreview  = false,  // PoC: プレビュー有効だと FilterRun 内の SDK 呼び出しがデッドロックするため無効化
+        .canPreview  = true,
     };
 }
 
@@ -86,12 +86,12 @@ FilterParams BuildFilterParams(
 TriglavPlugInInt OnPropertyChanged(
     TriglavPlugInPropertyObject     /*propObj*/,
     TriglavPlugInInt                /*itemKey*/,
-    TriglavPlugInInt                /*notify*/,
+    TriglavPlugInInt                notify,
     TriglavPlugInPropertyService*   /*propSvc*/,
     TriglavPlugInPropertyService2*  /*propSvc2*/)
 {
-    // canPreview = false のため Modify を返す必要はない。
-    // Modify を返すと CSP が FilterRun を呼び出し、その中で propSvc 関数を呼ぶと
-    // CSP SDK 内部で SEH 例外（アクセス違反）が発生してプロセスがクラッシュする。
-    return kTriglavPlugInPropertyCallBackResultNoModify;
+    // ValueChanged のとき Modify を返してプレビューの再計算をトリガーする。
+    return (notify == kTriglavPlugInPropertyCallBackNotifyValueChanged)
+        ? kTriglavPlugInPropertyCallBackResultModify
+        : kTriglavPlugInPropertyCallBackResultNoModify;
 }
