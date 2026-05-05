@@ -154,6 +154,8 @@ struct BridgeData
 {
     TriglavPlugInPropertyService*  pPropertyService  = nullptr;
     TriglavPlugInPropertyService2* pPropertyService2 = nullptr;
+    FilterParams                   cachedParams;      ///< FilterRun 外で読んだプロパティ値キャッシュ
+    bool                           inFilterRun = false; ///< FilterRun 中は propSvc 呼び出し禁止
 #ifdef _WIN32
     HANDLE hPlugin = nullptr;  ///< DuplicateHandle で複製した子プロセスハンドル
 #else
@@ -222,6 +224,9 @@ static void TRIGLAV_PLUGIN_CALLBACK FilterPropertyCallBack(
         propObj, itemKey, notify,
         bd ? bd->pPropertyService  : nullptr,
         bd ? bd->pPropertyService2 : nullptr);
+    // FilterRun 中は CSP が propSvc をロックしているため呼び出し禁止
+    if (bd && !bd->inFilterRun && notify == kTriglavPlugInPropertyCallBackNotifyValueChanged)
+        bd->cachedParams = BuildFilterParams(propObj, bd->pPropertyService, bd->pPropertyService2);
 }
 
 // ===========================================================================
@@ -394,6 +399,10 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             {
                 SetupProperty(propObj, strSvc, propSvc, propSvc2);
 
+                // 初期値でキャッシュを作成（FilterRun 内では propSvc を呼べないため）
+                if (bd != nullptr)
+                    bd->cachedParams = BuildFilterParams(propObj, propSvc, propSvc2);
+
                 TriglavPlugInFilterInitializeSetProperty(
                     &recSuite, hostObject, propObj);
 
@@ -435,6 +444,9 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
         if (TriglavPlugInGetFilterRunRecord(&recSuite) != nullptr
             && offSvc != nullptr)
         {
+            BridgeData* bdRun = static_cast<BridgeData*>(*data);
+            if (bdRun) bdRun->inFilterRun = true;
+
             try
             {
                 // CSP にフィルター実行開始を通知
@@ -446,6 +458,7 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                 if (processResult == kTriglavPlugInFilterRunProcessResultExit)
                 {
                     DbgLog("CSPBridge: FilterRun Exit from Start\n");
+                    if (bdRun) bdRun->inFilterRun = false;
                     *result = kTriglavPlugInCallResultSuccess;
                     return;
                 }
@@ -533,14 +546,10 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
 
                 // PluginSession を生成してフィルターを実行
                 {
-                    TriglavPlugInPropertyObject propObj = nullptr;
-                    TriglavPlugInFilterRunGetProperty(&recSuite, &propObj, hostObject);
-
+                    // FilterRun 内では CSP propSvc が内部ロックを取れずデッドロックするため、
+                    // FilterInitialize/PropertyCallBack で更新済みのキャッシュを使う
                     BridgeData* bd = static_cast<BridgeData*>(*data);
-                    FilterParams params = BuildFilterParams(
-                        propObj,
-                        bd ? bd->pPropertyService  : nullptr,
-                        bd ? bd->pPropertyService2 : nullptr);
+                    FilterParams params = bd ? bd->cachedParams : FilterParams{};
 
                     const std::string stderrLog = moduleDir + "/cspbridge_stderr.log";
                     PluginSession session(exePath, cfg.gimpLibDir, PluginMode::Run, &ctx, stderrLog);
@@ -592,11 +601,13 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
                     &recSuite, &processResult,
                     hostObject, kTriglavPlugInFilterRunProcessStateEnd);
 
+                if (bdRun) bdRun->inFilterRun = false;
                 *result = kTriglavPlugInCallResultSuccess;
                 DbgLog("CSPBridge: FilterRun SUCCESS\n");
             }
             catch (const std::exception& ex)
             {
+                if (bdRun) bdRun->inFilterRun = false;
                 BridgeData* bdEx = static_cast<BridgeData*>(*data);
 #ifdef _WIN32
                 if (bdEx && bdEx->hPlugin)
@@ -614,6 +625,7 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             }
             catch (...)
             {
+                if (bdRun) bdRun->inFilterRun = false;
                 BridgeData* bdEx = static_cast<BridgeData*>(*data);
 #ifdef _WIN32
                 if (bdEx && bdEx->hPlugin)

@@ -85,13 +85,18 @@ void SetupProperty(
     TriglavPlugInPropertyService2*  propSvc2);
 
 /**
- * @brief  FilterRun 時に CSP プロパティ値から GIMP wire パラメーターを組み立てる
+ * @brief  プロパティ値から GIMP wire パラメーターを組み立てる
  *
  * プラグインが `getIntegerValueProc` / `getBooleanValueProc` / `getDecimalValueProc`
  * 等を直接呼んで CSP 側の現在値を読み取り、GIMP プラグインへ送る `FilterParams`
  * を返す。`procedureName` と `args` をすべて埋めること。
  *
- * @param  propObj   FilterRun 中に取得したプロパティオブジェクト
+ * **呼び出し可能なコンテキスト**: FilterInitialize（`createProc` で生成した propObj）
+ * および FilterPropertyCallBack（`inFilterRun = false` のとき）のみ。
+ * FilterRun 内で `TriglavPlugInFilterRunGetProperty` が返した propObj に対して
+ * 呼ぶと CSP SDK 内部で SEH 例外が発生してプロセスがクラッシュする。
+ *
+ * @param  propObj   プラグインが createProc で生成、または callback で受け取った propObj
  * @param  propSvc   PropertyService v1
  * @param  propSvc2  PropertyService v2（NULL 可）
  * @return 子プロセスへ送出する FilterParams
@@ -112,8 +117,14 @@ FilterParams BuildFilterParams(
  *
  * @note `PluginInfo::canPreview = true` のプラグインでは、`notify ==
  *       kTriglavPlugInPropertyCallBackNotifyValueChanged` のときに `Modify` を
- *       返してプレビュー再描画をトリガーすること（CSPBridge `Blur.cs::PropertyCallback`
+ *       返してプレビュー再描画をトリガーできる（CSPBridge `Blur.cs::PropertyCallback`
  *       および `HSV.cs::PropertyCallback` 参照）。
+ *       **ただし PoC 実機検証（2026-05）にて、`canPreview = true` + `Modify` の
+ *       組み合わせが `TriglavPlugInFilterRunGetProperty` のデッドロックを引き起こす
+ *       ことが確認された。真因は未解明（CSP SDK が FilterRun コールスタック上で
+ *       PropertyCallBack を同期呼び出しし、`Modify` 受信時に CSP 内部ロックが
+ *       デッドロックする可能性がある）。プレビュー対応フェーズ（将来）まで
+ *       `canPreview = false` / `NoModify` 固定を強く推奨する。**
  *
  * @param  propObj   現在のプロパティオブジェクト
  * @param  itemKey   通知対象のアイテムキー
