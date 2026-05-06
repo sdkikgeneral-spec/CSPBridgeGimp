@@ -222,13 +222,13 @@ static void TRIGLAV_PLUGIN_CALLBACK FilterPropertyCallBack(
 
     DbgLog("CSPBridge: FilterPropertyCallBack called\n");
 
-    if (bd && notify == kTriglavPlugInPropertyCallBackNotifyValueChanged)
-        bd->cachedParams = BuildFilterParams(propObj, bd->pPropertyService, bd->pPropertyService2);
-
     *result = OnPropertyChanged(
         propObj, itemKey, notify,
         bd ? bd->pPropertyService  : nullptr,
         bd ? bd->pPropertyService2 : nullptr);
+
+    if (bd && *result == kTriglavPlugInPropertyCallBackResultModify)
+        bd->cachedParams = BuildFilterParams(propObj, bd->pPropertyService, bd->pPropertyService2);
 }
 
 // ===========================================================================
@@ -370,13 +370,13 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             TriglavPlugInStringObject catNameObj = CreateAsciiString(strSvc, info.category);
             TriglavPlugInFilterInitializeSetFilterCategoryName(
                 &recSuite, hostObject, catNameObj, '\0');
-            strSvc->releaseProc(catNameObj);
+            if (catNameObj) strSvc->releaseProc(catNameObj);
 
             // フィルター名（PluginInfo.displayName）
             TriglavPlugInStringObject filterNameObj = CreateAsciiString(strSvc, info.displayName);
             TriglavPlugInFilterInitializeSetFilterName(
                 &recSuite, hostObject, filterNameObj, '\0');
-            strSvc->releaseProc(filterNameObj);
+            if (filterNameObj) strSvc->releaseProc(filterNameObj);
 
             // プレビュー
             TriglavPlugInFilterInitializeSetCanPreview(
@@ -447,6 +447,14 @@ TRIGLAV_PLUGIN_DLL_EXTERN void TRIGLAV_PLUGIN_CALLBACK TriglavPluginCall(
             && offSvc != nullptr)
         {
             BridgeData* bdRun = static_cast<BridgeData*>(*data);
+
+            // HSV サンプルに倣い FilterRun のたびに現セレクターの propSvc で更新する。
+            // FilterInitialize 時のポインタは FilterRun の pluginServer とは別物で無効。
+            if (bdRun)
+            {
+                bdRun->pPropertyService  = pluginServer->serviceSuite.propertyService;
+                bdRun->pPropertyService2 = pluginServer->serviceSuite.propertyService2;
+            }
 
             try
             {

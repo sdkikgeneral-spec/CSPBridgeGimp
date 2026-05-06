@@ -34,6 +34,8 @@ void SetupProperty(
     TriglavPlugInPropertyService*   propSvc,
     TriglavPlugInPropertyService2*  /*propSvc2*/)
 {
+    if (!propObj || !strSvc || !propSvc) return;
+
     // Psychobilly (Boolean)
     auto psyLabel = CreateAsciiString(strSvc, "Psychobilly");
     propSvc->addItemProc(propObj, ItemKeyPsychobilly,
@@ -42,7 +44,7 @@ void SetupProperty(
         kTriglavPlugInPropertyInputKindDefault,
         psyLabel, '\0');
     propSvc->setBooleanValueProc(propObj, ItemKeyPsychobilly, kTriglavPlugInBoolFalse);
-    strSvc->releaseProc(psyLabel);
+    if (psyLabel) strSvc->releaseProc(psyLabel);
 
     // Check Size (Integer slider)
     auto szLabel = CreateAsciiString(strSvc, "Check Size");
@@ -55,7 +57,7 @@ void SetupProperty(
     propSvc->setIntegerDefaultValueProc(propObj, ItemKeyCheckSize, 10);
     propSvc->setIntegerMinValueProc    (propObj, ItemKeyCheckSize, 1);
     propSvc->setIntegerMaxValueProc    (propObj, ItemKeyCheckSize, 200);
-    strSvc->releaseProc(szLabel);
+    if (szLabel) strSvc->releaseProc(szLabel);
 }
 
 FilterParams BuildFilterParams(
