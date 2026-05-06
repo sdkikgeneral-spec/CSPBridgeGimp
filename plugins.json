@@ -2,5 +2,13 @@
   {
     "id": "PlugInCheckerboard",
     "src": "src/plugins/checkerboard.cpp"
+  },
+  {
+    "id": "PlugInDespeckle",
+    "src": "src/plugins/despeckle.cpp"
+  },
+  {
+    "id": "PlugInBlinds",
+    "src": "src/plugins/blinds.cpp"
   }
 ]
