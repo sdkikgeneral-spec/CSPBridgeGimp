@@ -133,36 +133,69 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 
 ## 全プラグイン引数詳細
 
-### plug-in-align-layers（区分 D）
+### 区分 A — 実装容易
 
-レイヤー操作のため CSP SDK（1 offscreen out 固定）と非互換。実装不可。
+#### plug-in-crop-zealous
 
-### plug-in-border-average（区分 A）
+引数なし。`GIMP_RUN_NONINTERACTIVE` で即動作。
+
+#### plug-in-gradient-map
+
+引数なし。前景→背景グラデーションをグレースケール輝度にマッピング。`GIMP_RUN_NONINTERACTIVE` で即動作。
+
+#### plug-in-qbist
+
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `anti-aliasing` | gboolean | TRUE/FALSE | TRUE | 固定 | `1`（TRUE） |
+
+> ランダムテクスチャ生成。毎回異なる結果になるため CSP の「再適用」と組み合わせた活用向き。
+
+#### plug-in-tile-small
+
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `num-tiles` | gint | 2–MAX_SEGS | 2 | スライダー公開 | UI 値 |
+
+#### plug-in-border-average
 
 | GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
 |---------|----|----|---------|------|----|
 | `thickness` | gint | 0–MAXINT | 3 | スライダー公開 | UI 値 |
 | `bucket-exponent` | GimpChoice | levels-1/levels-2/…/levels-256 | levels-16 | 固定 | `"levels-16"` |
 
-### plug-in-cml-explorer（区分 D）
+#### plug-in-destripe
 
-パラメーターファイル依存のため NONINTERACTIVE での安定動作は困難。
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `avg-width` | gint | 2–MAX_AVG | 36 | スライダー公開 | UI 値 |
+| `create-histogram` | gboolean | TRUE/FALSE | FALSE | 固定 | `0`（FALSE） |
 
-| GIMP 引数 | 型 | 備考 |
-|---------|----|----|
-| `parameter-file` | GimpFile | CML_explorer 設定ファイルパス |
+#### plug-in-hot
 
-### plug-in-colormap-remap（区分 C）
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `mode` | GimpChoice | ntsc/pal | ntsc | 固定 | `"ntsc"` |
+| `action` | GimpChoice | reduce-luminance/reduce-saturation/blacken | reduce-luminance | 固定 | `"reduce-luminance"` |
+| `new-layer` | gboolean | TRUE/FALSE | TRUE | 固定 | `0`（FALSE：現レイヤーに適用） |
 
-| GIMP 引数 | 型 | 範囲 | デフォルト | 備考 |
-|---------|----|----|---------|------|
-| `map` | bytes | — | — | カラーマップ差し替えデータ（バイト列）|
+#### plug-in-nl-filter
 
-### plug-in-compose（区分 C）
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `alpha` | gdouble | 0–1 | 0.3 | スライダー公開 | UI 値 |
+| `radius` | gdouble | 1/3–1 | 1/3 | スライダー公開 | UI 値 |
+| `filter` | GimpChoice | alpha-trim/optimal-estimation/edge-enhancement | alpha-trim | 固定 | `"alpha-trim"` |
 
-他 image 入力が最大 3 枚必要。単体 drawable フィルターとして利用困難。
+#### plug-in-tile
 
-### plug-in-contrast-retinex（区分 A）
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `new-width` | gint | 1–MAXSIZE | 1 | スライダー公開 | UI 値（元画像幅のN倍推奨） |
+| `new-height` | gint | 1–MAXSIZE | 1 | スライダー公開 | UI 値（元画像高のN倍推奨） |
+| `new-image` | gboolean | TRUE/FALSE | TRUE | 固定 | `0`（FALSE：現画像に適用） |
+
+#### plug-in-contrast-retinex
 
 | GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
 |---------|----|----|---------|------|----|
@@ -171,34 +204,49 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 | `scales-mode` | GimpChoice | uniform/low/high | uniform | 固定 | `"uniform"` |
 | `cvar` | gdouble | 0–4 | 1.2 | スライダー公開 | UI 値 |
 
-### plug-in-crop-zealous（区分 A）
-
-引数なし。`GIMP_RUN_NONINTERACTIVE` で即動作。
-
-### plug-in-curve-bend（区分 D）
-
-256 点フリーハンドカーブのバイト列引数を含むため NONINTERACTIVE での制御は困難。
-
-### plug-in-decompose（区分 D）
-
-カラーチャンネルごとに新規 image を 3〜4 枚作成する。CSP SDK は 1 offscreen out 固定のため書き戻し先がなく実装不可。
-
-### plug-in-depth-merge（区分 C）
-
-他 drawable を 4 枚入力する必要があり、単体フィルターとして実装困難。
-
-### plug-in-destripe（区分 A）
+#### plug-in-jigsaw
 
 | GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
 |---------|----|----|---------|------|----|
-| `avg-width` | gint | 2–MAX_AVG | 36 | スライダー公開 | UI 値 |
-| `create-histogram` | gboolean | TRUE/FALSE | FALSE | 固定 | `0`（FALSE） |
+| `x` | gint | 1–MAX | 5 | スライダー公開 | UI 値 |
+| `y` | gint | 1–MAX | 5 | スライダー公開 | UI 値 |
+| `style` | GimpChoice | square/curved | square | 固定 | `"square"` |
+| `blend-lines` | gint | 1–MAX | 3 | スライダー公開 | UI 値 |
+| `blend-amount` | gdouble | 0–MAX | 0.5 | スライダー公開 | UI 値 |
 
-### plug-in-flame（区分 D）
+#### plug-in-pagecurl
 
-インタラクティブな炎パラメーター設定に依存。NONINTERACTIVE での実用は困難。
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `colors` | GimpChoice | fg-bg/current-gradient/current-gradient-reversed | fg-bg | 固定 | `"fg-bg"` |
+| `edge` | GimpChoice | upper-left/upper-right/lower-left/lower-right | lower-right | 固定 | `"lower-right"` |
+| `orientation` | GimpChoice | vertical/horizontal | vertical | 固定 | `"vertical"` |
+| `shade` | gboolean | TRUE/FALSE | TRUE | 固定 | `1`（TRUE） |
+| `opacity` | gdouble | 0–1 | 0 | スライダー公開 | UI 値 |
 
-### plug-in-fractal-explorer（区分 B）
+#### plug-in-sparkle
+
+| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
+|---------|----|----|---------|------|----|
+| `lum-threshold` | gdouble | 0–0.1 | 0.01 | スライダー公開 | UI 値 |
+| `flare-inten` | gdouble | 0–1 | 0.5 | スライダー公開 | UI 値 |
+| `spike-len` | gint | 1–100 | 20 | スライダー公開 | UI 値 |
+| `spike-points` | gint | 1–16 | 4 | スライダー公開 | UI 値 |
+| `spike-angle` | gint | -1–360 | 15 | スライダー公開 | UI 値 |
+| `density` | gdouble | 0–1 | 1 | スライダー公開 | UI 値 |
+| `transparency` | gdouble | 0–1 | 0 | スライダー公開 | UI 値 |
+| `random-hue` | gdouble | 0–1 | 0 | 固定 | `0.0` |
+| `random-saturation` | gdouble | 0–1 | 0 | 固定 | `0.0` |
+| `preserve-luminosity` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
+| `inverse` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
+| `border` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
+| `color-type` | GimpChoice | natural-color/foreground-color/background-color | natural-color | 固定 | `"natural-color"` |
+
+---
+
+### 区分 B — 実装中程度
+
+#### plug-in-fractal-explorer
 
 | GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
 |---------|----|----|---------|------|----|
@@ -223,23 +271,7 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 | `n-colors` | gint | 2–8192 | 512 | 固定 | デフォルト値 |
 | `use-loglog-smoothing` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
 
-### plug-in-gfig（区分 D）
-
-UI 専用の幾何図形エディター。引数なし・NONINTERACTIVE 不可。
-
-### plug-in-gimpressionist（区分 D）
-
-プリセット名依存。あらかじめ保存されたプリセットが必要。
-
-### plug-in-gradient-flare（区分 D）
-
-フレア名（`gflare-name`）依存。カスタムグラデーションフレア定義が前提。
-
-### plug-in-gradient-map（区分 A）
-
-引数なし。前景→背景グラデーションをグレースケール輝度にマッピング。`GIMP_RUN_NONINTERACTIVE` で即動作。
-
-### plug-in-grid（区分 B）
+#### plug-in-grid
 
 GimpRGB 型の色引数を含む。CSP から色を渡す仕組みが必要。
 
@@ -258,33 +290,7 @@ GimpRGB 型の色引数を含む。CSP から色を渡す仕組みが必要。
 | `ioffset` | gint | 0–MAXSIZE | 6 | 固定 | デフォルト値 |
 | `icolor` | GimpRGB | — | (デフォルト) | 固定 | デフォルト（黒） |
 
-### plug-in-guillotine（区分 D）
-
-ガイドに沿って画像を複数 image に分割する。CSP SDK は 1 offscreen out 固定のため実装不可。
-
-### plug-in-hot（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `mode` | GimpChoice | ntsc/pal | ntsc | 固定 | `"ntsc"` |
-| `action` | GimpChoice | reduce-luminance/reduce-saturation/blacken | reduce-luminance | 固定 | `"reduce-luminance"` |
-| `new-layer` | gboolean | TRUE/FALSE | TRUE | 固定 | `0`（FALSE：現レイヤーに適用） |
-
-### plug-in-ifs-compose（区分 D）
-
-aux シリアライズデータ依存。NONINTERACTIVE での利用は実質不可。
-
-### plug-in-jigsaw（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `x` | gint | 1–MAX | 5 | スライダー公開 | UI 値 |
-| `y` | gint | 1–MAX | 5 | スライダー公開 | UI 値 |
-| `style` | GimpChoice | square/curved | square | 固定 | `"square"` |
-| `blend-lines` | gint | 1–MAX | 3 | スライダー公開 | UI 値 |
-| `blend-amount` | gdouble | 0–MAX | 0.5 | スライダー公開 | UI 値 |
-
-### plug-in-lighting（区分 B）
+#### plug-in-lighting
 
 bump-drawable・env-drawable は NULL 可（デフォルト動作）。スカラー引数のみで動作可能。
 
@@ -316,93 +322,101 @@ bump-drawable・env-drawable は NULL 可（デフォルト動作）。スカラ
 | `transparent-background` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
 | `distance` | gdouble | 0–2 | 0.25 | 固定 | デフォルト値 |
 
-### plug-in-map-object（区分 C）
+---
+
+### 区分 C — 他 drawable 入力が必要
+
+#### plug-in-colormap-remap
+
+| GIMP 引数 | 型 | 範囲 | デフォルト | 備考 |
+|---------|----|----|---------|------|
+| `map` | bytes | — | — | カラーマップ差し替えデータ（バイト列）|
+
+#### plug-in-compose
+
+他 image 入力が最大 3 枚必要。単体 drawable フィルターとして利用困難。
+
+#### plug-in-depth-merge
+
+他 drawable を 4 枚入力する必要があり、単体フィルターとして実装困難。
+
+#### plug-in-map-object
 
 box/cylinder の face drawable を NULL にすればスカラーのみで動作する可能性あるが、主用途が 3D マッピングのため実装優先度低。
 
-### plug-in-nl-filter（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `alpha` | gdouble | 0–1 | 0.3 | スライダー公開 | UI 値 |
-| `radius` | gdouble | 1/3–1 | 1/3 | スライダー公開 | UI 値 |
-| `filter` | GimpChoice | alpha-trim/optimal-estimation/edge-enhancement | alpha-trim | 固定 | `"alpha-trim"` |
-
-### plug-in-pagecurl（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `colors` | GimpChoice | fg-bg/current-gradient/current-gradient-reversed | fg-bg | 固定 | `"fg-bg"` |
-| `edge` | GimpChoice | upper-left/upper-right/lower-left/lower-right | lower-right | 固定 | `"lower-right"` |
-| `orientation` | GimpChoice | vertical/horizontal | vertical | 固定 | `"vertical"` |
-| `shade` | gboolean | TRUE/FALSE | TRUE | 固定 | `1`（TRUE） |
-| `opacity` | gdouble | 0–1 | 0 | スライダー公開 | UI 値 |
-
-### plug-in-qbist（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `anti-aliasing` | gboolean | TRUE/FALSE | TRUE | 固定 | `1`（TRUE） |
-
-> ランダムテクスチャ生成。毎回異なる結果になるため CSP の「再適用」と組み合わせた活用向き。
-
-### plug-in-sample-colorize（区分 C）
+#### plug-in-sample-colorize
 
 `sample-drawable` として別 drawable 入力が必要。
 
-### plug-in-selection-to-path（区分 D）
-
-選択範囲をパスに変換する操作。フィルター用途外。
-
-### plug-in-smooth-palette（区分 D）
-
-新規 image（パレット画像）を作成する。CSP SDK は 1 offscreen out 固定のため実装不可。
-
-### plug-in-sparkle（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `lum-threshold` | gdouble | 0–0.1 | 0.01 | スライダー公開 | UI 値 |
-| `flare-inten` | gdouble | 0–1 | 0.5 | スライダー公開 | UI 値 |
-| `spike-len` | gint | 1–100 | 20 | スライダー公開 | UI 値 |
-| `spike-points` | gint | 1–16 | 4 | スライダー公開 | UI 値 |
-| `spike-angle` | gint | -1–360 | 15 | スライダー公開 | UI 値 |
-| `density` | gdouble | 0–1 | 1 | スライダー公開 | UI 値 |
-| `transparency` | gdouble | 0–1 | 0 | スライダー公開 | UI 値 |
-| `random-hue` | gdouble | 0–1 | 0 | 固定 | `0.0` |
-| `random-saturation` | gdouble | 0–1 | 0 | 固定 | `0.0` |
-| `preserve-luminosity` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
-| `inverse` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
-| `border` | gboolean | TRUE/FALSE | FALSE | 固定 | `0` |
-| `color-type` | GimpChoice | natural-color/foreground-color/background-color | natural-color | 固定 | `"natural-color"` |
-
-### plug-in-sphere-designer（区分 D）
-
-aux シリアライズデータ依存。NONINTERACTIVE での利用は実質不可。
-
-### plug-in-tile（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `new-width` | gint | 1–MAXSIZE | 1 | スライダー公開 | UI 値（元画像幅のN倍推奨） |
-| `new-height` | gint | 1–MAXSIZE | 1 | スライダー公開 | UI 値（元画像高のN倍推奨） |
-| `new-image` | gboolean | TRUE/FALSE | TRUE | 固定 | `0`（FALSE：現画像に適用） |
-
-### plug-in-tile-small（区分 A）
-
-| GIMP 引数 | 型 | 範囲 | デフォルト | CSP UI | 値 |
-|---------|----|----|---------|------|----|
-| `num-tiles` | gint | 2–MAX_SEGS | 2 | スライダー公開 | UI 値 |
-
-### plug-in-van-gogh-lic（区分 C）
+#### plug-in-van-gogh-lic
 
 `effect-image` drawable 入力が必須のため、単体フィルターとして実装困難。
 
-### plug-in-warp（区分 C）
+#### plug-in-warp
 
 `warp-map` drawable 入力が必須のため、単体フィルターとして実装困難。
 
-### plug-in-wavelet-decompose（区分 D）
+---
+
+### 区分 D — 実装不可
+
+#### plug-in-align-layers
+
+レイヤー操作のため CSP SDK（1 offscreen out 固定）と非互換。実装不可。
+
+#### plug-in-cml-explorer
+
+パラメーターファイル依存のため NONINTERACTIVE での安定動作は困難。
+
+| GIMP 引数 | 型 | 備考 |
+|---------|----|----|
+| `parameter-file` | GimpFile | CML_explorer 設定ファイルパス |
+
+#### plug-in-curve-bend
+
+256 点フリーハンドカーブのバイト列引数を含むため NONINTERACTIVE での制御は困難。
+
+#### plug-in-decompose
+
+カラーチャンネルごとに新規 image を 3〜4 枚作成する。CSP SDK は 1 offscreen out 固定のため書き戻し先がなく実装不可。
+
+#### plug-in-flame
+
+インタラクティブな炎パラメーター設定に依存。NONINTERACTIVE での実用は困難。
+
+#### plug-in-gfig
+
+UI 専用の幾何図形エディター。引数なし・NONINTERACTIVE 不可。
+
+#### plug-in-gimpressionist
+
+プリセット名依存。あらかじめ保存されたプリセットが必要。
+
+#### plug-in-gradient-flare
+
+フレア名（`gflare-name`）依存。カスタムグラデーションフレア定義が前提。
+
+#### plug-in-guillotine
+
+ガイドに沿って画像を複数 image に分割する。CSP SDK は 1 offscreen out 固定のため実装不可。
+
+#### plug-in-ifs-compose
+
+aux シリアライズデータ依存。NONINTERACTIVE での利用は実質不可。
+
+#### plug-in-selection-to-path
+
+選択範囲をパスに変換する操作。フィルター用途外。
+
+#### plug-in-smooth-palette
+
+新規 image（パレット画像）を作成する。CSP SDK は 1 offscreen out 固定のため実装不可。
+
+#### plug-in-sphere-designer
+
+aux シリアライズデータ依存。NONINTERACTIVE での利用は実質不可。
+
+#### plug-in-wavelet-decompose
 
 周波数帯ごとに複数のレイヤーを作成する。CSP SDK は 1 offscreen out 固定のため実装不可。
 
