@@ -1,6 +1,7 @@
 # GIMP 3 プラグイン EXE 利用可能性調査
 
-調査日: 2026-05-06  
+調査日: 2026-05-07（最終更新）  
+初回調査: 2026-05-06  
 調査対象: `C:\Users\sdkik\AppData\Local\Programs\GIMP 3\lib\gimp\3.0\plug-ins\`
 
 ---
@@ -48,14 +49,17 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 
 ---
 
-## 次期実装予定プラグイン
+## 実装済みプラグイン
 
-### despeckle
+| プラグイン | プロシージャ名 | 実装日 | 公開パラメーター |
+|-----------|-------------|--------|----------------|
+| checkerboard | `plug-in-checkerboard` | フェーズ1 | `check-size`（スライダー）, `check-size-2`（スライダー） |
+| despeckle | `plug-in-despeckle` | フェーズ2 | `radius`（スライダー 1–30）|
+| blinds | `plug-in-blinds` | フェーズ2 | `angle-displacement`（スライダー 0–90）, `num-segments`（スライダー 1–64）|
 
-| 項目 | 値 |
-|-----|---|
-| EXE | `despeckle/despeckle.exe` ✓ |
-| プロシージャ名 | `plug-in-despeckle` |
+### 実装済み引数詳細
+
+#### despeckle
 
 | GIMP 引数 | 型 | CSP UI | 値 |
 |---------|----|----|---|
@@ -64,14 +68,7 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 | `black` | gint | 固定 | `7` |
 | `white` | gint | 固定 | `248` |
 
-GimpChoice は `GpParamType::String` + `stringValue` フィールドで送信。
-
-### blinds
-
-| 項目 | 値 |
-|-----|---|
-| EXE | `blinds/blinds.exe` ✓ |
-| プロシージャ名 | `plug-in-blinds` |
+#### blinds
 
 | GIMP 引数 | 型 | CSP UI | 値 |
 |---------|----|----|---|
@@ -79,6 +76,35 @@ GimpChoice は `GpParamType::String` + `stringValue` フィールドで送信。
 | `num-segments` | gint (1–1024) | スライダー公開（max 64 に制限） | UI 値 |
 | `orientation` | GimpChoice | 固定 | `"horizontal"` |
 | `bg-transparent` | gboolean | 固定 | `0`（FALSE） |
+
+---
+
+## 次期実装候補プラグイン
+
+### destripe（最優先候補）
+
+| 項目 | 値 |
+|-----|---|
+| EXE | `destripe/destripe.exe` ✓ |
+| プロシージャ名 | `plug-in-destripe` |
+
+| GIMP 引数 | 型 | CSP UI | 値 |
+|---------|----|----|---|
+| `avg-width` | gint (2–100) | スライダー公開 | UI 値 |
+| `create-histogram` | gboolean | 固定 | `0`（FALSE） |
+
+> destripe は縦縞ノイズ除去フィルター。引数が少なくシンプルで次の実装に適している。
+
+### その他の候補（将来フェーズ）
+
+| プラグイン | プロシージャ名 | 備考 |
+|-----------|-------------|------|
+| nl-filter | `plug-in-nl-filter` | 非線形フィルター |
+| grid | `plug-in-grid` | グリッドオーバーレイ |
+| border-average | `plug-in-border-average` | 境界色平均化 |
+| contrast-retinex | `plug-in-retinex` | コントラスト強調（Retinex） |
+| sparkle | `plug-in-sparkle` | 光のきらめき効果 |
+| tile | `plug-in-tile` | タイル繰り返し |
 
 ---
 
