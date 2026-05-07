@@ -93,25 +93,20 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 |-----------|-----|------|
 | crop-zealous | A | 引数なし |
 | gradient-map | A | 引数なし（前景色グラデーション使用） |
-| guillotine | D | 複数 image 出力（CSP SDK 不可） |
-| wavelet-decompose | D | 複数レイヤー作成（CSP SDK 不可） |
-| destripe | A | 2 引数、全 scalar |
-| nl-filter | A | 3 引数、全 scalar |
 | tile-small | A | 1 引数 |
 | qbist | A | 1 引数（ランダム生成、毎回異なる） |
+| destripe | A | 2 引数、全 scalar |
+| border-average | A | 2 引数（gint + choice） |
+| nl-filter | A | 3 引数、全 scalar |
 | hot | A | 3 引数（choice×2 + bool） |
+| tile | A | 3 引数（gint×2 + bool） |
 | contrast-retinex | A | 4 引数（gint×2 + choice + gdouble） |
 | jigsaw | A | 5 引数、全 scalar |
-| sparkle | A | 13 引数、全 scalar |
-| decompose | D | 複数新規 image 作成（CSP SDK 不可） |
-| border-average | A | 2 引数（gint + choice） |
-| tile | A | 3 引数（gint×2 + bool） |
 | pagecurl | A | 5 引数（choice×3 + bool + gdouble） |
-| align-layers | D | レイヤー操作（CSP SDK 不可） |
-| fractal-explorer | B | 19 引数、全 scalar だが多い |
-| lighting | B | 多引数だが bump/env drawable は NULL 可 |
+| sparkle | A | 13 引数、全 scalar |
 | grid | B | 色（GimpRGB）引数を含む |
-| smooth-palette | D | 新規 image 作成（CSP SDK 不可） |
+| lighting | B | 多引数だが bump/env drawable は NULL 可 |
+| fractal-explorer | B | 19 引数、全 scalar だが多い |
 | colormap-remap | C | バイト配列（カラーマップデータ） |
 | compose | C | 他 image/drawable 入力が必要 |
 | depth-merge | C | 他 drawable×4 が必要 |
@@ -119,16 +114,20 @@ tile-small         van-gogh-lic       warp               wavelet-decompose
 | sample-colorize | C | サンプル drawable 入力が必要 |
 | van-gogh-lic | C | effect-image drawable 必要 |
 | warp | C | warp-map drawable 必要 |
+| align-layers | D | 複数レイヤー操作（CSP SDK 不可） |
 | cml-explorer | D | パラメーターファイル依存 |
 | curve-bend | D | 配列引数（256点フリーハンドカーブ） |
+| decompose | D | 複数新規 image 作成（CSP SDK 不可） |
 | flame | D | インタラクティブ設定依存 |
-| fractal-explorer | D | 多引数・通常 UI で設定 |
 | gfig | D | UI 専用エディター |
 | gimpressionist | D | プリセット名依存 |
 | gradient-flare | D | フレア名依存 |
+| guillotine | D | 複数 image 出力（CSP SDK 不可） |
 | ifs-compose | D | aux シリアライズデータ依存 |
 | selection-to-path | D | パス変換（フィルター用途外） |
+| smooth-palette | D | 新規 image 作成（CSP SDK 不可） |
 | sphere-designer | D | aux シリアライズデータ依存 |
+| wavelet-decompose | D | 複数レイヤー作成（CSP SDK 不可） |
 
 ---
 
